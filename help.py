@@ -7,25 +7,23 @@ from selenium.webdriver.chrome.options import Options
 import time
 import os
 import sys
+import subprocess
 
 # URL главной страницы
 MAIN_PAGE_URL = "https://kb.cifrium.ru/teacher/courses/771"
+HOME_URL = "https://kb.cifrium.ru/"
+LOGIN_URL = "https://kb.cifrium.ru/user/login"
 
 def setup_driver():
-    """Настройка и создание драйвера Chrome"""
+    """Настройка и создание драйвера Chrome (без профиля)"""
     print("Настраиваем Chrome драйвер...")
     chrome_options = Options()
     
-    # Используем ваш существующий профиль Chrome для сохранения сессии
-    user_data_dir = os.path.join(os.path.expanduser("~"), "AppData", "Local", "Google", "Chrome", "User Data")
-    print(f"Используем профиль Chrome: {user_data_dir}")
-    print("ВАЖНО: Закройте ВСЕ окна Chrome перед запуском скрипта!")
-    
-    chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
-    chrome_options.add_argument("--profile-directory=Default")
-    
-    # Раскомментируйте следующую строку, если хотите запускать браузер в фоновом режиме
-    # chrome_options.add_argument("--headless")
+    # Простые опции без профиля
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-infobars")
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_experimental_option('useAutomationExtension', False)
@@ -37,18 +35,7 @@ def setup_driver():
         driver.maximize_window()
         return driver
     except Exception as e:
-        error_msg = str(e)
-        print(f"\n✗ ОШИБКА при создании браузера: {error_msg}")
-        
-        if "user data directory is already in use" in error_msg.lower() or "cannot connect" in error_msg.lower():
-            print("\n⚠ Chrome все еще запущен!")
-            print("Пожалуйста, закройте ВСЕ окна Chrome и попробуйте снова.")
-        else:
-            print("\nВозможные причины:")
-            print("1. ChromeDriver не установлен или не в PATH")
-            print("2. Несовместимая версия ChromeDriver")
-            print("3. Проблемы с правами доступа")
-        
+        print(f"\n✗ ОШИБКА при создании браузера: {e}")
         import traceback
         traceback.print_exc()
         raise
@@ -110,8 +97,6 @@ def main():
     print("=" * 50)
     print("Запуск скрипта...")
     print("=" * 50)
-    print("\n⚠ ВАЖНО: Закройте ВСЕ окна Chrome перед запуском!")
-    print("=" * 50)
     print()
     
     driver = None
@@ -129,57 +114,76 @@ def main():
         print("ОШИБКА: driver is None!")
         return
     
-    print("\n" + "=" * 50)
-    print("НАЧИНАЕМ НАВИГАЦИЮ")
-    print("=" * 50)
-    sys.stdout.flush()
+    # Открываем главную страницу
+    print(f"\nОткрываем главную страницу: {MAIN_PAGE_URL}")
+    driver.get(MAIN_PAGE_URL)
+    time.sleep(3)
     
-    try:
-        print(f"Открываем главную страницу: {MAIN_PAGE_URL}")
-        print("Вызываем driver.get()...")
-        sys.stdout.flush()
-        
-        driver.get(MAIN_PAGE_URL)
-        print("✓ driver.get() выполнен успешно!")
-        sys.stdout.flush()
-        
-        # Ждем загрузки страницы
-        print("Ждем загрузки страницы (3 секунды)...")
-        sys.stdout.flush()
-        time.sleep(3)
-        
-        # Проверяем текущий URL
-        print("Проверяем текущий URL...")
-        sys.stdout.flush()
-        try:
-            current_url = driver.current_url
-            print(f"✓ Текущий URL: {current_url}")
-            sys.stdout.flush()
-            
-            if current_url == "data:," or current_url.startswith("chrome://"):
-                print("⚠ Браузер открыт, но не перешел на сайт!")
-                print("Попытка повторной навигации...")
-                sys.stdout.flush()
-                driver.get(MAIN_PAGE_URL)
-                time.sleep(3)
-                current_url = driver.current_url
-                print(f"Новый URL: {current_url}")
-                sys.stdout.flush()
-            
-            if current_url != MAIN_PAGE_URL and "login" in current_url.lower():
-                print("⚠ Похоже, требуется авторизация. Проверьте, что вы вошли в систему.")
-                sys.stdout.flush()
-        except Exception as url_error:
-            print(f"⚠ Не удалось получить текущий URL: {url_error}")
-            sys.stdout.flush()
-        
-    except Exception as nav_error:
-        print(f"✗ ОШИБКА при навигации: {nav_error}")
-        import traceback
-        traceback.print_exc()
-        sys.stdout.flush()
-        print("\nПопытка продолжить работу...")
+    # Проверяем, нужен ли вход
+    current_url = driver.current_url
+    print(f"Текущий URL: {current_url}")
     
+    # Проверяем, залогинены ли мы
+    # Если нас перенаправило на главную страницу (https://kb.cifrium.ru/), значит не залогинены
+    needs_login = False
+    if current_url == HOME_URL or current_url == HOME_URL.rstrip('/'):
+        print("⚠ Обнаружено: не залогинены (перенаправление на главную страницу)")
+        needs_login = True
+    elif "login" in current_url.lower() or "user/login" in current_url.lower():
+        print("⚠ Обнаружена страница входа")
+        needs_login = True
+    elif MAIN_PAGE_URL in current_url or "teacher/courses" in current_url:
+        print("✓ Уже залогинены! Перешли на целевую страницу.")
+        needs_login = False
+    else:
+        print(f"⚠ Неизвестный URL: {current_url}")
+        needs_login = True  # На всякий случай предполагаем, что нужен вход
+    
+    # Если нужен вход, ждем ручного входа
+    if needs_login:
+        print("\n" + "=" * 50)
+        print("ТРЕБУЕТСЯ ВХОД В СИСТЕМУ")
+        print("=" * 50)
+        print("Браузер открыт. Пожалуйста, войдите в систему вручную.")
+        print("После успешного входа:")
+        print("1. Убедитесь, что вы на странице: https://kb.cifrium.ru/teacher/courses/771")
+        print("2. Нажмите Enter в этом окне")
+        print("=" * 50)
+        input("\n>>> Нажмите Enter после того, как войдете в систему...")
+        
+        # Проверяем, залогинились ли
+        current_url = driver.current_url
+        print(f"\nТекущий URL после входа: {current_url}")
+        
+        if MAIN_PAGE_URL in current_url or "teacher/courses" in current_url:
+            print("✓ Отлично! Вы залогинены и на нужной странице.")
+        else:
+            print(f"⚠ Текущий URL: {current_url}")
+            print("Переходим на целевую страницу...")
+            driver.get(MAIN_PAGE_URL)
+            time.sleep(3)
+            
+            final_url = driver.current_url
+            if MAIN_PAGE_URL in final_url or "teacher/courses" in final_url:
+                print("✓ Перешли на целевую страницу!")
+            else:
+                print(f"⚠ Не удалось перейти. Текущий URL: {final_url}")
+                print("Попробуйте перейти вручную и нажмите Enter снова...")
+                input(">>> Нажмите Enter когда будете на нужной странице...")
+    else:
+        print("✓ Вы уже залогинены!")
+    
+    # Финальная проверка
+    final_url = driver.current_url
+    print(f"\n{'='*50}")
+    print(f"ФИНАЛЬНЫЙ URL: {final_url}")
+    if MAIN_PAGE_URL in final_url or "teacher/courses" in final_url:
+        print("✓ Сайт открыт и вы залогинены!")
+    else:
+        print(f"⚠ Текущий URL: {final_url}")
+    print(f"{'='*50}\n")
+    
+    # Продолжаем работу со скриптом
     try:
         print("Ищем список заданий...")
         sys.stdout.flush()
