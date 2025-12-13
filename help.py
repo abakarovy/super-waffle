@@ -2577,13 +2577,16 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
                 if description and description != 'nan':
                     print(f"  Описание: {description}")
             
+            # Сначала получаем ответ из Excel для проверки типа задачи
+            answer_text = str(task_data[answer_column]).strip()
+            
             # Определяем тип задачи на странице
             print("\n  Определяем тип задачи на странице...")
             task_type = detect_task_type(driver)
             
             # Проверяем ответ из Excel - если это список/массив, это должна быть checkbox задача
             # Это важно, так как некоторые страницы могут иметь и radio и checkbox элементы
-            if answer_text and (answer_text.strip().startswith('[') or 
+            if answer_text and answer_text != 'nan' and (answer_text.strip().startswith('[') or 
                                (',' in answer_text and ('"' in answer_text or "'" in answer_text)) or
                                ';' in answer_text):
                 # Ответ выглядит как список - проверяем, есть ли checkbox на странице
@@ -2642,9 +2645,8 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
             
             # Подготавливаем ответ в зависимости от типа задачи
             task_answer = None
-            answer_text = str(task_data[answer_column]).strip()
             
-            # Пропускаем пустые ответы
+            # Пропускаем пустые ответы (answer_text уже определен выше)
             if not answer_text or answer_text == 'nan':
                 print(f"  ⚠ Пустой ответ в Excel, пропускаем задачу")
                 previous_url = driver.current_url  # Обновляем previous_url
