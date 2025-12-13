@@ -367,9 +367,30 @@ def detect_task_type(driver):
         
         # 4. Code - написание кода
         try:
+            # Проверяем наличие textarea с source_code
             code_textarea = task_form.find_element(By.CSS_SELECTOR, "textarea[name*='source_code']")
             if code_textarea:
-                print("  Тип задачи: CODE (написание кода)")
+                print("  Тип задачи: CODE (написание кода) - найден textarea")
+                return "code"
+        except:
+            pass
+        
+        # Проверяем наличие CodeMirror редактора (новый формат)
+        try:
+            # Ищем панель Main с CodeMirror редактором
+            main_panel = task_form.find_element(By.XPATH, ".//div[contains(@class, 'styled__PanelHeader') and contains(text(), 'Main')]/following-sibling::div[contains(@class, 'styled__PanelContent')]")
+            cm_editor = main_panel.find_element(By.CSS_SELECTOR, ".cm-editor")
+            if cm_editor:
+                print("  Тип задачи: CODE (написание кода) - найден CodeMirror в панели Main")
+                return "code"
+        except:
+            pass
+        
+        # Альтернативная проверка: ищем любой CodeMirror редактор с data-language
+        try:
+            cm_editor = task_form.find_element(By.CSS_SELECTOR, ".cm-editor[data-language]")
+            if cm_editor:
+                print("  Тип задачи: CODE (написание кода) - найден CodeMirror с data-language")
                 return "code"
         except:
             pass
@@ -526,35 +547,52 @@ def handle_radio_task(driver, answer):
                 
                 # Кликаем на радио-кнопку
                 try:
-                    # Пробуем кликнуть на родительский элемент или label, если он есть
-                    try:
-                        # Ищем родительский div с классом styled__Root
-                        parent = radio.find_element(By.XPATH, "./ancestor::div[contains(@class, 'styled__Root')][1]")
-                        parent.click()
-                        print(f"    ✓ Кликнули на родительский элемент радио-кнопки")
-                    except:
-                        radio.click()
-                        print(f"    ✓ Кликнули на радио-кнопку напрямую")
+                    # Сначала пробуем через JavaScript (более надежно)
+                    driver.execute_script("""
+                        var radio = arguments[0];
+                        // Устанавливаем checked
+                        radio.checked = true;
+                        
+                        // Инициируем события
+                        var changeEvent = new Event('change', { bubbles: true, cancelable: true });
+                        radio.dispatchEvent(changeEvent);
+                        
+                        var clickEvent = new Event('click', { bubbles: true, cancelable: true });
+                        radio.dispatchEvent(clickEvent);
+                        
+                        // Также пробуем кликнуть на родительский элемент
+                        var parent = radio.closest('div[class*="styled__Root"]');
+                        if (parent) {
+                            parent.click();
+                        }
+                    """, radio)
                     
                     # Проверяем, что радио-кнопка выбрана
-                    time.sleep(0.2)
-                    is_selected = radio.is_selected()
+                    time.sleep(0.3)
+                    is_selected = driver.execute_script("return arguments[0].checked;", radio)
+                    
                     if is_selected:
-                        print(f"    ✓ Радио-кнопка со значением {value} успешно выбрана")
+                        print(f"    ✓ Радио-кнопка со значением {value} успешно выбрана через JS")
                         return True
                     else:
-                        print(f"    ⚠ Радио-кнопка не выбрана после клика, пробуем через JavaScript...")
-                        # Если прямой клик не работает, пробуем через JavaScript
-                        driver.execute_script("arguments[0].checked = true;", radio)
-                        driver.execute_script("arguments[0].dispatchEvent(new Event('change'));", radio)
-                        driver.execute_script("arguments[0].dispatchEvent(new Event('click'));", radio)
+                        # Если JavaScript не сработал, пробуем обычный клик
+                        print(f"    ⚠ Радио-кнопка не выбрана через JS, пробуем обычный клик...")
+                        try:
+                            # Ищем родительский div с классом styled__Root
+                            parent = radio.find_element(By.XPATH, "./ancestor::div[contains(@class, 'styled__Root')][1]")
+                            parent.click()
+                            print(f"    ✓ Кликнули на родительский элемент радио-кнопки")
+                        except:
+                            radio.click()
+                            print(f"    ✓ Кликнули на радио-кнопку напрямую")
+                        
                         time.sleep(0.2)
-                        is_selected = driver.execute_script("return arguments[0].checked;", radio)
+                        is_selected = radio.is_selected()
                         if is_selected:
-                            print(f"    ✓ Радио-кнопка со значением {value} выбрана через JS")
+                            print(f"    ✓ Радио-кнопка со значением {value} успешно выбрана")
                             return True
                         else:
-                            print(f"    ⚠ Радио-кнопка все еще не выбрана после JS")
+                            print(f"    ⚠ Радио-кнопка все еще не выбрана")
                             return False
                 except Exception as e:
                     print(f"    ⚠ Ошибка при клике: {e}, пробуем через JavaScript...")
@@ -607,12 +645,18 @@ def handle_drag_and_drop_task(driver, mappings):
         for target_text, element_text in mappings:
             print(f"  Сопоставляем '{element_text}' -> '{target_text}'")
             
-            # Обновляем список draggable элементов перед каждым поиском
+            # Обновляем форму и все списки перед каждым поиском
             # (так как элементы могут быть перемещены)
-            draggable_elements = task_form.find_elements(By.CSS_SELECTOR, "[draggable='true']")
+            task_form = get_task_form(driver)
+            target_areas = task_form.find_elements(By.CSS_SELECTOR, ".LinkTaskRow_linkRowTarget__D79Ny")
+            drop_areas = task_form.find_elements(By.CSS_SELECTOR, ".LinkTaskRow_linkRowContent__XBn6u")
             
             # Находим элемент для перетаскивания по тексту
+            # Ищем во всех возможных контейнерах опций, не только с draggable='true'
             source_element = None
+            
+            # Сначала ищем среди элементов с draggable='true' (еще не перемещенные)
+            draggable_elements = task_form.find_elements(By.CSS_SELECTOR, "[draggable='true']")
             for draggable in draggable_elements:
                 try:
                     # Проверяем, что элемент еще не перемещен (не находится внутри drop area)
@@ -626,23 +670,99 @@ def handle_drag_and_drop_task(driver, mappings):
                         pass
                     
                     # Пробуем извлечь текст из span с классом MathContent_content
+                    text = ""
                     try:
+                        # Сначала пробуем найти span с классом MathContent_content
                         span = draggable.find_element(By.XPATH, ".//span[contains(@class, 'MathContent_content')]")
                         text = span.text.strip()
                     except:
-                        text = draggable.text.strip()
+                        try:
+                            # Если не нашли, пробуем найти в родительских элементах
+                            parent = draggable.find_element(By.XPATH, "./ancestor::div[contains(@class, 'OptionsSlide_option__PBAys')]")
+                            span = parent.find_element(By.XPATH, ".//span[contains(@class, 'MathContent_content')]")
+                            text = span.text.strip()
+                        except:
+                            try:
+                                # Пробуем получить текст напрямую из элемента
+                                text = draggable.text.strip()
+                            except:
+                                # Последняя попытка - через JavaScript
+                                try:
+                                    text = driver.execute_script("""
+                                        var el = arguments[0];
+                                        var span = el.querySelector('.MathContent_content__2a8XE');
+                                        if (span) return span.textContent.trim();
+                                        return el.textContent.trim();
+                                    """, draggable)
+                                except:
+                                    text = ""
                     
                     # Нормализуем тексты для сравнения
-                    text_normalized = ' '.join(text.lower().split())
-                    element_normalized = ' '.join(element_text.lower().split())
-                    
-                    # Проверяем совпадение (частичное или полное)
-                    if element_normalized in text_normalized or text_normalized in element_normalized:
-                        source_element = draggable
-                        print(f"      Найден draggable элемент: '{text}'")
-                        break
+                    if text:
+                        text_normalized = ' '.join(text.lower().split())
+                        element_normalized = ' '.join(element_text.lower().split())
+                        
+                        # Проверяем совпадение (частичное или полное)
+                        if element_normalized in text_normalized or text_normalized in element_normalized:
+                            source_element = draggable
+                            print(f"      Найден draggable элемент: '{text}'")
+                            break
                 except:
                     continue
+            
+            # Если не нашли среди draggable элементов, ищем во всех контейнерах опций
+            if not source_element:
+                # Ищем во всех контейнерах опций (включая те, что уже могут быть перемещены, но еще не в drop areas)
+                all_option_containers = task_form.find_elements(By.CSS_SELECTOR, ".OptionsSlide_option__PBAys, .styled__Wrapper-cixSOf")
+                for container in all_option_containers:
+                    try:
+                        # Проверяем, что контейнер еще не находится в drop area
+                        try:
+                            parent = container.find_element(By.XPATH, "./ancestor::div[contains(@class, 'LinkTaskRow_linkRowContent__XBn6u')]")
+                            # Контейнер уже в drop area, пропускаем
+                            continue
+                        except:
+                            # Контейнер еще не перемещен, проверяем текст
+                            pass
+                        
+                        # Проверяем, есть ли внутри draggable элемент
+                        try:
+                            draggable_in_container = container.find_element(By.CSS_SELECTOR, "[draggable='true']")
+                            # Есть draggable элемент, проверяем текст
+                            try:
+                                span = draggable_in_container.find_element(By.XPATH, ".//span[contains(@class, 'MathContent_content')]")
+                                text = span.text.strip()
+                            except:
+                                text = draggable_in_container.text.strip()
+                            
+                            text_normalized = ' '.join(text.lower().split())
+                            element_normalized = ' '.join(element_text.lower().split())
+                            
+                            if element_normalized in text_normalized or text_normalized in element_normalized:
+                                source_element = draggable_in_container
+                                print(f"      Найден draggable элемент в контейнере: '{text}'")
+                                break
+                        except:
+                            # Нет draggable элемента, но проверяем текст контейнера
+                            try:
+                                span = container.find_element(By.XPATH, ".//span[contains(@class, 'MathContent_content')]")
+                                text = span.text.strip()
+                            except:
+                                text = container.text.strip()
+                            
+                            text_normalized = ' '.join(text.lower().split())
+                            element_normalized = ' '.join(element_text.lower().split())
+                            
+                            if element_normalized in text_normalized or text_normalized in element_normalized:
+                                # Находим draggable элемент внутри или используем контейнер
+                                try:
+                                    source_element = container.find_element(By.CSS_SELECTOR, "[draggable='true']")
+                                except:
+                                    source_element = container
+                                print(f"      Найден элемент в контейнере: '{text}'")
+                                break
+                    except:
+                        continue
             
             # Находим целевую область по тексту
             target_area = None
@@ -672,12 +792,32 @@ def handle_drag_and_drop_task(driver, mappings):
             
             if source_element and target_area:
                 try:
-                    # Прокручиваем к исходному элементу
-                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", source_element)
-                    time.sleep(0.2)
+                    # Убеждаемся что элементы полностью видны
+                    driver.execute_script("""
+                        var source = arguments[0];
+                        var target = arguments[1];
+                        
+                        // Прокручиваем исходный элемент в центр экрана
+                        source.scrollIntoView({block: 'center', inline: 'center', behavior: 'instant'});
+                        
+                        // Прокручиваем целевую область в центр экрана
+                        target.scrollIntoView({block: 'center', inline: 'center', behavior: 'instant'});
+                        
+                        // Убеждаемся что элементы видимы
+                        var sourceRect = source.getBoundingClientRect();
+                        var targetRect = target.getBoundingClientRect();
+                        
+                        // Если элемент частично скрыт, прокручиваем еще раз
+                        if (sourceRect.top < 0 || sourceRect.bottom > window.innerHeight) {
+                            source.scrollIntoView({block: 'center', inline: 'center'});
+                        }
+                        if (targetRect.top < 0 || targetRect.bottom > window.innerHeight) {
+                            target.scrollIntoView({block: 'center', inline: 'center'});
+                        }
+                    """, source_element, target_area)
+                    time.sleep(0.3)
                     
-                    # Используем правильную последовательность событий drag and drop API
-                    # чтобы форма правильно зафиксировала изменения
+                    # Используем JavaScript для перетаскивания (более надежно чем ActionChains)
                     success = driver.execute_script("""
                         var source = arguments[0];
                         var target = arguments[1];
@@ -703,33 +843,32 @@ def handle_drag_and_drop_task(driver, mappings):
                                 return false;
                             }
                             
-                            // Создаем mock DataTransfer объект
-                            var mockDataTransfer = {
-                                effectAllowed: 'all',
-                                dropEffect: 'move',
-                                files: [],
-                                items: [],
-                                types: [],
-                                setData: function() {},
-                                getData: function() { return ''; },
-                                clearData: function() {}
-                            };
+                            // Получаем ID или данные элемента для передачи
+                            var elementId = draggableElement.getAttribute('data-id') || 
+                                          draggableElement.id || 
+                                          optionContainer.getAttribute('data-id') ||
+                                          '';
+                            
+                            // Создаем правильный DataTransfer объект
+                            var dataTransfer = new DataTransfer();
+                            if (elementId) {
+                                dataTransfer.setData('text/plain', elementId);
+                                dataTransfer.setData('application/json', JSON.stringify({id: elementId}));
+                            }
                             
                             // 1. Инициируем dragstart на исходном элементе
-                            var dragStartEvent = new Event('dragstart', { bubbles: true, cancelable: true });
-                            Object.defineProperty(dragStartEvent, 'dataTransfer', {
-                                value: mockDataTransfer,
-                                writable: false,
-                                configurable: true
+                            var dragStartEvent = new DragEvent('dragstart', { 
+                                bubbles: true, 
+                                cancelable: true,
+                                dataTransfer: dataTransfer
                             });
                             draggableElement.dispatchEvent(dragStartEvent);
                             
                             // 2. Инициируем dragover на целевой области
-                            var dragOverEvent = new Event('dragover', { bubbles: true, cancelable: true });
-                            Object.defineProperty(dragOverEvent, 'dataTransfer', {
-                                value: mockDataTransfer,
-                                writable: false,
-                                configurable: true
+                            var dragOverEvent = new DragEvent('dragover', { 
+                                bubbles: true, 
+                                cancelable: true,
+                                dataTransfer: dataTransfer
                             });
                             dragOverEvent.preventDefault(); // Разрешаем drop
                             target.dispatchEvent(dragOverEvent);
@@ -758,11 +897,10 @@ def handle_drag_and_drop_task(driver, mappings):
                             target.appendChild(clone);
                             
                             // 6. Инициируем drop событие на целевой области
-                            var dropEvent = new Event('drop', { bubbles: true, cancelable: true });
-                            Object.defineProperty(dropEvent, 'dataTransfer', {
-                                value: mockDataTransfer,
-                                writable: false,
-                                configurable: true
+                            var dropEvent = new DragEvent('drop', { 
+                                bubbles: true, 
+                                cancelable: true,
+                                dataTransfer: dataTransfer
                             });
                             dropEvent.preventDefault();
                             target.dispatchEvent(dropEvent);
@@ -770,32 +908,140 @@ def handle_drag_and_drop_task(driver, mappings):
                             // 7. Удаляем исходный элемент
                             optionContainer.remove();
                             
-                            // 8. Инициируем dragend (на форме, так как исходный элемент удален)
-                            var dragEndEvent = new Event('dragend', { bubbles: true, cancelable: true });
-                            Object.defineProperty(dragEndEvent, 'dataTransfer', {
-                                value: mockDataTransfer,
-                                writable: false,
-                                configurable: true
+                            // 8. Инициируем dragend
+                            var dragEndEvent = new DragEvent('dragend', { 
+                                bubbles: true, 
+                                cancelable: true,
+                                dataTransfer: dataTransfer
                             });
                             var form = target.closest('form');
                             if (form) {
                                 form.dispatchEvent(dragEndEvent);
                             }
                             
-                            // 9. Инициируем дополнительные события для обновления формы
-                            var changeEvent = new Event('change', { bubbles: true });
+                            // 9. Обновляем скрытые поля формы с правильными значениями
+                            if (form) {
+                                // Ищем input поля внутри текущей drop area
+                                var inputInTarget = target.querySelector('input[type="hidden"]');
+                                
+                                // Получаем значение из перетащенного элемента
+                                var optionText = clone.textContent.trim() || 
+                                                clone.querySelector('.MathContent_content')?.textContent.trim() || 
+                                                clone.querySelector('span')?.textContent.trim() || '';
+                                
+                                // Пробуем найти data-id или другой идентификатор
+                                var optionId = clone.getAttribute('data-id') || 
+                                              clone.querySelector('[data-id]')?.getAttribute('data-id') ||
+                                              draggableElement.getAttribute('data-id') ||
+                                              optionContainer.getAttribute('data-id') || '';
+                                
+                                var valueToSet = optionId || optionText;
+                                
+                                if (inputInTarget) {
+                                    console.log('Найден input в drop area:', inputInTarget.name || inputInTarget.id, 'текущее значение:', inputInTarget.value, 'новое значение:', valueToSet);
+                                    
+                                    // Устанавливаем значение
+                                    inputInTarget.value = valueToSet;
+                                    
+                                    // Инициируем события для обновления React состояния
+                                    var inputEvent = new Event('input', { bubbles: true, cancelable: true });
+                                    inputInTarget.dispatchEvent(inputEvent);
+                                    
+                                    var changeEvent = new Event('change', { bubbles: true, cancelable: true });
+                                    inputInTarget.dispatchEvent(changeEvent);
+                                    
+                                    // Также пробуем установить значение через свойство напрямую
+                                    Object.defineProperty(inputInTarget, 'value', {
+                                        value: valueToSet,
+                                        writable: true
+                                    });
+                                    inputInTarget.dispatchEvent(new Event('input', { bubbles: true }));
+                                    inputInTarget.dispatchEvent(new Event('change', { bubbles: true }));
+                                    
+                                    console.log('Значение после обновления:', inputInTarget.value);
+                                } else {
+                                    console.log('⚠ Input не найден в drop area, ищем в родительских элементах...');
+                                    // Ищем input в родительских элементах
+                                    var parent = target.closest('.LinkTaskRow_linkRow__36TU1');
+                                    if (parent) {
+                                        var inputInParent = parent.querySelector('input[type="hidden"]');
+                                        if (inputInParent) {
+                                            console.log('Найден input в родительском элементе:', inputInParent.name || inputInParent.id);
+                                            inputInParent.value = valueToSet;
+                                            inputInParent.dispatchEvent(new Event('input', { bubbles: true }));
+                                            inputInParent.dispatchEvent(new Event('change', { bubbles: true }));
+                                        }
+                                    }
+                                }
+                                
+                                // Также обновляем все скрытые поля формы на основе содержимого drop areas
+                                var hiddenInputs = form.querySelectorAll('input[type="hidden"]');
+                                var dropAreas = form.querySelectorAll('.LinkTaskRow_linkRowContent__XBn6u');
+                                
+                                dropAreas.forEach(function(dropArea, index) {
+                                    var option = dropArea.querySelector('.OptionsSlide_option__PBAys, .styled__Wrapper-cixSOf');
+                                    if (option) {
+                                        var optionText = option.textContent.trim() || 
+                                                        option.querySelector('.MathContent_content')?.textContent.trim() || 
+                                                        option.querySelector('span')?.textContent.trim() || '';
+                                        
+                                        var optionId = option.getAttribute('data-id') || 
+                                                      option.querySelector('[data-id]')?.getAttribute('data-id') || 
+                                                      '';
+                                        
+                                        var valueToSet = optionId || optionText;
+                                        
+                                        // Ищем input внутри этой drop area
+                                        var inputInArea = dropArea.querySelector('input[type="hidden"]');
+                                        if (inputInArea && valueToSet) {
+                                            inputInArea.value = valueToSet;
+                                            inputInArea.dispatchEvent(new Event('input', { bubbles: true }));
+                                            inputInArea.dispatchEvent(new Event('change', { bubbles: true }));
+                                        }
+                                        
+                                        // Также ищем скрытые поля по имени/ID
+                                        hiddenInputs.forEach(function(input) {
+                                            var inputName = (input.name || input.id || '').toLowerCase();
+                                            var inputIndex = input.getAttribute('data-index') || 
+                                                           input.getAttribute('data-answer-index') ||
+                                                           '';
+                                            
+                                            // Проверяем, соответствует ли поле этой drop area
+                                            if ((inputName.includes('answer') && (inputName.includes(String(index)) || inputIndex == index)) ||
+                                                (inputName.includes('option') && (inputName.includes(String(index)) || inputIndex == index)) ||
+                                                (input.getAttribute('data-row-index') == index) ||
+                                                (input.closest('.LinkTaskRow_linkRow__36TU1') === dropArea.closest('.LinkTaskRow_linkRow__36TU1'))) {
+                                                
+                                                if (valueToSet) {
+                                                    input.value = valueToSet;
+                                                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                                                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                                                }
+                                            }
+                                        });
+                                    } else {
+                                        // Если в drop area нет опции, очищаем соответствующее поле
+                                        var inputInArea = dropArea.querySelector('input[type="hidden"]');
+                                        if (inputInArea && !inputInArea.value) {
+                                            // Оставляем пустым, если поле уже пустое
+                                        }
+                                    }
+                                });
+                            }
+                            
+                            // 10. Инициируем дополнительные события для обновления формы
+                            var changeEvent = new Event('change', { bubbles: true, cancelable: true });
                             target.dispatchEvent(changeEvent);
                             
-                            var inputEvent = new Event('input', { bubbles: true });
+                            var inputEvent = new Event('input', { bubbles: true, cancelable: true });
                             target.dispatchEvent(inputEvent);
                             
-                            // 10. Инициируем событие на форме
+                            // 11. Инициируем события на форме для обновления React состояния
                             if (form) {
-                                var formChangeEvent = new Event('change', { bubbles: true });
+                                var formChangeEvent = new Event('change', { bubbles: true, cancelable: true });
                                 form.dispatchEvent(formChangeEvent);
                                 
-                                // Также пробуем инициировать input событие
-                                var formInputEvent = new Event('input', { bubbles: true });
+                                var formInputEvent = new Event('input', { bubbles: true, cancelable: true });
                                 form.dispatchEvent(formInputEvent);
                                 
                                 // Пробуем обновить React состояние через синтетические события
@@ -807,12 +1053,9 @@ def handle_drag_and_drop_task(driver, mappings):
                                     });
                                     form.dispatchEvent(reactEvent);
                                 } catch(e) {}
-                            }
-                            
-                            // 11. Принудительно обновляем все возможные скрытые поля формы
-                            if (form) {
-                                // Ищем все скрытые input поля и обновляем их
-                                var hiddenInputs = form.querySelectorAll('input[type="hidden"]');
+                                
+                                // Принудительно обновляем все скрытые поля еще раз
+                                hiddenInputs = form.querySelectorAll('input[type="hidden"]');
                                 hiddenInputs.forEach(function(input) {
                                     var inputEvent = new Event('change', { bubbles: true });
                                     input.dispatchEvent(inputEvent);
@@ -829,21 +1072,119 @@ def handle_drag_and_drop_task(driver, mappings):
                     time.sleep(1)  # Увеличиваем время ожидания для обновления UI и состояния формы
                     
                     if success:
-                        # Дополнительная проверка - убеждаемся, что элемент действительно в целевой области
+                        print(f"    ✓ Перетащено через JavaScript: '{element_text}' в '{target_text}'")
+                        matched_count += 1
+                        
+                        # Дополнительная проверка и обновление скрытых полей
                         try:
-                            # Ждем немного и проверяем еще раз
-                            time.sleep(0.3)
-                            # Инициируем еще одно событие change на форме для гарантии
+                            # Ждем немного для обновления DOM
+                            time.sleep(0.5)
+                            
+                            # Принудительно обновляем скрытые поля в целевой области
                             driver.execute_script("""
                                 var target = arguments[0];
                                 var form = target.closest('form');
+                                
                                 if (form) {
-                                    var event = new Event('change', { bubbles: true });
-                                    form.dispatchEvent(event);
+                                    // Находим input в текущей drop area
+                                    var inputInTarget = target.querySelector('input[type="hidden"]');
+                                    if (inputInTarget) {
+                                        // Получаем текст из перетащенного элемента
+                                        var option = target.querySelector('.OptionsSlide_option__PBAys, .styled__Wrapper-cixSOf');
+                                        if (option) {
+                                            var optionText = option.textContent.trim() || 
+                                                            option.querySelector('.MathContent_content')?.textContent.trim() || 
+                                                            option.querySelector('span')?.textContent.trim() || '';
+                                            
+                                            var optionId = option.getAttribute('data-id') || 
+                                                          option.querySelector('[data-id]')?.getAttribute('data-id') || '';
+                                            
+                                            var valueToSet = optionId || optionText;
+                                            
+                                            console.log('Дополнительная проверка - input:', inputInTarget.name || inputInTarget.id, 'текущее:', inputInTarget.value, 'новое:', valueToSet);
+                                            
+                                            if (valueToSet && inputInTarget.value !== valueToSet) {
+                                                inputInTarget.value = valueToSet;
+                                                inputInTarget.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                                                inputInTarget.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+                                                console.log('Значение обновлено:', inputInTarget.value);
+                                            } else if (!valueToSet) {
+                                                console.log('⚠ Значение для установки пустое!');
+                                            } else {
+                                                console.log('Значение уже установлено правильно');
+                                            }
+                                        } else {
+                                            console.log('⚠ Опция не найдена в drop area');
+                                        }
+                                    } else {
+                                        console.log('⚠ Input не найден в drop area, ищем в родительских элементах...');
+                                        // Ищем в родительских элементах
+                                        var parent = target.closest('.LinkTaskRow_linkRow__36TU1');
+                                        if (parent) {
+                                            var inputInParent = parent.querySelector('input[type="hidden"]');
+                                            if (inputInParent) {
+                                                console.log('Найден input в родительском элементе:', inputInParent.name || inputInParent.id);
+                                                var option = target.querySelector('.OptionsSlide_option__PBAys, .styled__Wrapper-cixSOf');
+                                                if (option) {
+                                                    var optionText = option.textContent.trim() || 
+                                                                    option.querySelector('.MathContent_content')?.textContent.trim() || 
+                                                                    option.querySelector('span')?.textContent.trim() || '';
+                                                    var optionId = option.getAttribute('data-id') || 
+                                                                  option.querySelector('[data-id]')?.getAttribute('data-id') || '';
+                                                    var valueToSet = optionId || optionText;
+                                                    if (valueToSet) {
+                                                        inputInParent.value = valueToSet;
+                                                        inputInParent.dispatchEvent(new Event('input', { bubbles: true }));
+                                                        inputInParent.dispatchEvent(new Event('change', { bubbles: true }));
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Обновляем все drop areas
+                                    var dropAreas = form.querySelectorAll('.LinkTaskRow_linkRowContent__XBn6u');
+                                    dropAreas.forEach(function(dropArea, index) {
+                                        var option = dropArea.querySelector('.OptionsSlide_option__PBAys, .styled__Wrapper-cixSOf');
+                                        var inputInArea = dropArea.querySelector('input[type="hidden"]');
+                                        
+                                        if (option && inputInArea) {
+                                            var optionText = option.textContent.trim() || 
+                                                            option.querySelector('.MathContent_content__2a8XE')?.textContent.trim() || 
+                                                            option.querySelector('.MathContent_content')?.textContent.trim() || 
+                                                            option.querySelector('span')?.textContent.trim() || '';
+                                            var optionId = option.getAttribute('data-id') || 
+                                                          option.querySelector('[data-id]')?.getAttribute('data-id') || '';
+                                            var valueToSet = optionId || optionText;
+                                            
+                                            if (valueToSet) {
+                                                // Принудительно устанавливаем значение
+                                                inputInArea.value = valueToSet;
+                                                Object.defineProperty(inputInArea, 'value', {
+                                                    value: valueToSet,
+                                                    writable: true,
+                                                    configurable: true
+                                                });
+                                                
+                                                inputInArea.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                                                inputInArea.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+                                                inputInArea.dispatchEvent(new Event('blur', { bubbles: true, cancelable: true }));
+                                                
+                                                console.log('Обновлено поле', index, ':', inputInArea.name || inputInArea.id, '=', valueToSet);
+                                            }
+                                        }
+                                    });
+                                    
+                                    // Инициируем события на форме
+                                    var formChangeEvent = new Event('change', { bubbles: true, cancelable: true });
+                                    form.dispatchEvent(formChangeEvent);
+                                    
+                                    var formInputEvent = new Event('input', { bubbles: true, cancelable: true });
+                                    form.dispatchEvent(formInputEvent);
                                 }
                             """, target_area)
-                        except:
-                            pass
+                        except Exception as e:
+                            print(f"    ⚠ Ошибка при дополнительном обновлении полей: {e}")
                         
                         matched_count += 1
                         print(f"    ✓ Перетащено '{element_text}' в '{target_text}'")
@@ -881,6 +1222,73 @@ def handle_drag_and_drop_task(driver, mappings):
                     traceback.print_exc()
             else:
                 print(f"    ⚠ Не найдены элементы для '{element_text}' -> '{target_text}'")
+        
+        # ФИНАЛЬНОЕ ОБНОВЛЕНИЕ: Принудительно обновляем все скрытые поля после всех перетаскиваний
+        if matched_count > 0:
+            time.sleep(0.5)  # Даем время DOM полностью обновиться
+            try:
+                task_form = get_task_form(driver)
+                driver.execute_script("""
+                    var form = arguments[0];
+                    if (form) {
+                        console.log('=== ФИНАЛЬНОЕ ОБНОВЛЕНИЕ ВСЕХ ПОЛЕЙ ===');
+                        
+                        // Обновляем все drop areas
+                        var dropAreas = form.querySelectorAll('.LinkTaskRow_linkRowContent__XBn6u');
+                        dropAreas.forEach(function(dropArea, index) {
+                            var option = dropArea.querySelector('.OptionsSlide_option__PBAys, .styled__Wrapper-cixSOf');
+                            var inputInArea = dropArea.querySelector('input[type="hidden"]');
+                            
+                            if (option && inputInArea) {
+                                var optionText = option.textContent.trim() || 
+                                                option.querySelector('.MathContent_content')?.textContent.trim() || 
+                                                option.querySelector('span')?.textContent.trim() || '';
+                                var optionId = option.getAttribute('data-id') || 
+                                              option.querySelector('[data-id]')?.getAttribute('data-id') || '';
+                                var valueToSet = optionId || optionText;
+                                
+                                if (valueToSet) {
+                                    // Принудительно устанавливаем значение
+                                    inputInArea.value = valueToSet;
+                                    
+                                    // Устанавливаем через свойство напрямую
+                                    Object.defineProperty(inputInArea, 'value', {
+                                        value: valueToSet,
+                                        writable: true,
+                                        configurable: true
+                                    });
+                                    
+                                    // Инициируем все возможные события
+                                    inputInArea.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                                    inputInArea.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+                                    inputInArea.dispatchEvent(new Event('blur', { bubbles: true, cancelable: true }));
+                                    
+                                    console.log('ФИНАЛЬНО обновлено поле', index, ':', inputInArea.name || inputInArea.id, '=', valueToSet, 'текущее значение:', inputInArea.value);
+                                } else {
+                                    console.log('⚠ Поле', index, 'пустое, значение не установлено');
+                                }
+                            } else {
+                                console.log('⚠ Поле', index, 'не найдено (option:', !!option, 'input:', !!inputInArea, ')');
+                            }
+                        });
+                        
+                        // Инициируем события на форме
+                        form.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+                        form.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                        
+                        // Обновляем все скрытые input поля формы
+                        var allHiddenInputs = form.querySelectorAll('input[type="hidden"]');
+                        allHiddenInputs.forEach(function(input) {
+                            input.dispatchEvent(new Event('change', { bubbles: true }));
+                            input.dispatchEvent(new Event('input', { bubbles: true }));
+                        });
+                        
+                        console.log('=== ФИНАЛЬНОЕ ОБНОВЛЕНИЕ ЗАВЕРШЕНО ===');
+                    }
+                """, task_form)
+                time.sleep(0.3)
+            except Exception as final_update_error:
+                print(f"  ⚠ Ошибка при финальном обновлении полей: {final_update_error}")
         
         print(f"  ✓ Выполнено перетаскиваний: {matched_count}")
         return matched_count > 0
@@ -1334,7 +1742,15 @@ def handle_task(driver, task_answer=None):
                 print(f"  ⚠ Для radio задачи нужно одно значение, получено: {task_answer} (тип: {type(task_answer)})")
         
         elif task_type == "drag_and_drop":
-            success = handle_drag_and_drop_task(driver, task_answer)
+            # Если ответ - это строка (не список кортежей и не словарь), возможно это на самом деле text задача
+            if isinstance(task_answer, str):
+                print("  Ответ для drag_and_drop - это строка, обрабатываем как text...")
+                success = handle_text_task(driver, task_answer)
+            elif isinstance(task_answer, (list, dict)):
+                success = handle_drag_and_drop_task(driver, task_answer)
+            else:
+                print(f"  ⚠ Неожиданный тип ответа для drag_and_drop: {type(task_answer)}")
+                success = False
         
         elif task_type == "code":
             if isinstance(task_answer, str):
@@ -1433,14 +1849,33 @@ def find_best_radio_match(answer_text, radios):
             # Это соответствует структуре: <input type="radio"> <div class="styled__Label">...</div>
             if not label_text:
                 try:
-                    # Ищем следующий sibling div с классом, содержащим styled__Label
+                    # Ищем следующий sibling div с классом, содержащим styled__Label или MathContent_root
                     label_div = radio.find_element(By.XPATH, "./following-sibling::div[contains(@class, 'styled__Label') or contains(@class, 'MathContent_root')]")
-                    # Внутри может быть span с классом MathContent_content
+                    # Внутри может быть span с классом MathContent_content или MathContent_content__2a8XE
                     try:
                         span = label_div.find_element(By.XPATH, ".//span[contains(@class, 'MathContent_content')]")
                         label_text = span.text.strip()
                     except:
                         label_text = label_div.text.strip()
+                except:
+                    pass
+            
+            # Способ 1.5: Ищем span с классом MathContent_content__2a8XE (точный класс из HTML)
+            if not label_text:
+                try:
+                    # Ищем следующий sibling div
+                    label_div = radio.find_element(By.XPATH, "./following-sibling::div")
+                    # Ищем span с точным классом MathContent_content__2a8XE
+                    try:
+                        span = label_div.find_element(By.CSS_SELECTOR, "span.MathContent_content__2a8XE")
+                        label_text = span.text.strip()
+                    except:
+                        # Пробуем найти любой span с классом содержащим MathContent_content
+                        try:
+                            span = label_div.find_element(By.XPATH, ".//span[contains(@class, 'MathContent_content')]")
+                            label_text = span.text.strip()
+                        except:
+                            label_text = label_div.text.strip()
                 except:
                     pass
             
@@ -1484,6 +1919,22 @@ def find_best_radio_match(answer_text, radios):
                     pass
             
             if not label_text:
+                # Пробуем еще раз через родительский элемент
+                try:
+                    parent = radio.find_element(By.XPATH, "./..")
+                    label_text = parent.text.strip()
+                    if label_text:
+                        # Убираем текст из других элементов (например, из других radio)
+                        # Берем только текст из следующего sibling div
+                        try:
+                            next_div = radio.find_element(By.XPATH, "./following-sibling::div")
+                            label_text = next_div.text.strip()
+                        except:
+                            pass
+                except:
+                    pass
+            
+            if not label_text:
                 continue
                 
             value = radio.get_attribute("value")
@@ -1493,14 +1944,23 @@ def find_best_radio_match(answer_text, radios):
             continue
     
     if not candidates:
+        print(f"    [DEBUG] Не найдено кандидатов для радио-кнопок")
         return None, None
+    
+    # Выводим найденные варианты для отладки
+    print(f"    [DEBUG] Найдено кандидатов: {len(candidates)}")
+    for i, (radio, value, label_text, label_normalized, _) in enumerate(candidates[:3]):  # Показываем первые 3
+        print(f"      {i+1}. value={value}, text='{label_text[:50]}...'")
     
     # Сортируем по длине (сначала самые длинные) для приоритета полных ответов
     candidates.sort(key=lambda x: x[4], reverse=True)
     
+    print(f"    [DEBUG] Ищем совпадение для: '{answer_text[:50]}...' (нормализовано: '{answer_normalized[:50]}...')")
+    
     # 1. Ищем точное совпадение
     for radio, value, label_text, label_normalized, _ in candidates:
         if answer_normalized == label_normalized:
+            print(f"    [DEBUG] Найдено точное совпадение!")
             return radio, value
     
     # 1.2. Ищем почти идентичные тексты (разница в 1-5 символов)
@@ -1710,9 +2170,151 @@ def parse_drag_and_drop_answer(answer_text):
                     return result
             except json.JSONDecodeError as e:
                 print(f"    ⚠ Ошибка парсинга JSON: {e}")
+                print(f"    Полный JSON (первые 500 символов): '{answer_text[:500]}...'")
+                # Пробуем исправить JSON - находим правильный конец объекта по балансу скобок
+                brace_count = 0
+                last_valid_pos = -1
+                for i, char in enumerate(answer_text):
+                    if char == '{':
+                        brace_count += 1
+                    elif char == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            last_valid_pos = i
+                            break
+                
+                if last_valid_pos > 0:
+                    cleaned_text = answer_text[:last_valid_pos + 1]
+                    try:
+                        mappings_dict = json.loads(cleaned_text)
+                        if isinstance(mappings_dict, dict):
+                            result = list(mappings_dict.items())
+                            print(f"    ✓ Успешно распарсен JSON-объект (после очистки): {len(result)} сопоставлений")
+                            return result
+                    except Exception as e2:
+                        print(f"    ⚠ Не удалось распарсить после очистки: {e2}")
+                
+                # Пробуем использовать регулярные выражения для извлечения пар ключ-значение
+                try:
+                    import re
+                    # Улучшенный подход: парсим JSON вручную, находя правильные границы строк
+                    # Ищем все пары "ключ": "значение", учитывая что кавычки внутри могут быть частью значения
+                    result = []
+                    i = 0
+                    while i < len(answer_text):
+                        # Ищем начало ключа
+                        if answer_text[i] == '"':
+                            # Находим конец ключа
+                            key_start = i + 1
+                            key_end = key_start
+                            while key_end < len(answer_text) and answer_text[key_end] != '"':
+                                if answer_text[key_end] == '\\':
+                                    key_end += 2  # Пропускаем экранированный символ
+                                else:
+                                    key_end += 1
+                            
+                            if key_end < len(answer_text):
+                                key = answer_text[key_start:key_end]
+                                # Ищем двоеточие после ключа
+                                colon_pos = answer_text.find(':', key_end + 1)
+                                if colon_pos > 0:
+                                    # Ищем начало значения
+                                    value_start_pos = answer_text.find('"', colon_pos + 1)
+                                    if value_start_pos > 0:
+                                        value_start = value_start_pos + 1
+                                        value_end = value_start
+                                        # Находим конец значения (учитывая экранированные кавычки)
+                                        while value_end < len(answer_text) and answer_text[value_end] != '"':
+                                            if answer_text[value_end] == '\\':
+                                                value_end += 2
+                                            else:
+                                                value_end += 1
+                                        
+                                        if value_end < len(answer_text):
+                                            value = answer_text[value_start:value_end]
+                                            # Обрабатываем экранированные символы
+                                            key = key.replace('\\"', '"').replace('\\\\', '\\')
+                                            value = value.replace('\\"', '"').replace('\\\\', '\\')
+                                            result.append((key, value))
+                                            i = value_end + 1
+                                            continue
+                        i += 1
+                    
+                    if result:
+                        print(f"    ✓ Успешно распарсен через ручной парсинг: {len(result)} сопоставлений")
+                        return result
+                    
+                    # Fallback: простой regex паттерн
+                    pattern_simple = r'"([^"]+)":\s*"([^"]+)"'
+                    matches = re.findall(pattern_simple, answer_text)
+                    if matches:
+                        result = [(target, element) for target, element in matches]
+                        print(f"    ✓ Успешно распарсен через regex (простой паттерн): {len(result)} сопоставлений")
+                        return result
+                except Exception as regex_e:
+                    print(f"    ⚠ Не удалось распарсить через regex: {regex_e}")
+                
+                # Пробуем использовать ast.literal_eval как последний fallback
+                try:
+                    import ast
+                    # Находим последнюю закрывающую скобку
+                    if last_valid_pos > 0:
+                        cleaned_text = answer_text[:last_valid_pos + 1]
+                    else:
+                        last_brace = answer_text.rfind('}')
+                        if last_brace > 0:
+                            cleaned_text = answer_text[:last_brace + 1]
+                        else:
+                            cleaned_text = answer_text
+                    
+                    parsed = ast.literal_eval(cleaned_text)
+                    if isinstance(parsed, dict):
+                        result = list(parsed.items())
+                        print(f"    ✓ Успешно распарсен через ast.literal_eval: {len(result)} сопоставлений")
+                        return result
+                except Exception as ast_e:
+                    print(f"    ⚠ Не удалось распарсить через ast.literal_eval: {ast_e}")
+                
                 print(f"    Попробуйте проверить синтаксис JSON")
             except Exception as e:
                 print(f"    ⚠ Ошибка при обработке JSON: {e}")
+        
+        # Обработка JSON, который начинается с {, но не заканчивается на } (лишние символы в конце)
+        if answer_text.startswith('{') and not answer_text.endswith('}'):
+            try:
+                # Находим правильный конец JSON объекта по балансу скобок
+                brace_count = 0
+                last_valid_pos = -1
+                for i, char in enumerate(answer_text):
+                    if char == '{':
+                        brace_count += 1
+                    elif char == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            last_valid_pos = i
+                            break
+                
+                if last_valid_pos > 0:
+                    cleaned_text = answer_text[:last_valid_pos + 1]
+                    try:
+                        mappings_dict = json.loads(cleaned_text)
+                        if isinstance(mappings_dict, dict):
+                            result = list(mappings_dict.items())
+                            print(f"    ✓ Успешно распарсен JSON-объект (после удаления лишних символов): {len(result)} сопоставлений")
+                            return result
+                    except:
+                        # Пробуем ast.literal_eval
+                        try:
+                            import ast
+                            parsed = ast.literal_eval(cleaned_text)
+                            if isinstance(parsed, dict):
+                                result = list(parsed.items())
+                                print(f"    ✓ Успешно распарсен через ast.literal_eval (после очистки): {len(result)} сопоставлений")
+                                return result
+                        except:
+                            pass
+            except:
+                pass
         
         # Формат 2: Список кортежей
         if answer_text.startswith('[') and answer_text.endswith(']'):
@@ -1727,7 +2329,8 @@ def parse_drag_and_drop_answer(answer_text):
         
         # Формат 3: Список пар через разделитель (-> или :)
         # Ищем паттерн "цель -> элемент" или "цель: элемент"
-        if '->' in answer_text or ':' in answer_text:
+        # НЕ используем этот формат, если текст начинается с { (это был JSON)
+        if (not answer_text.startswith('{')) and ('->' in answer_text or ':' in answer_text):
             pairs = []
             # Разделяем по точке с запятой
             parts = re.split(r';\s*', answer_text)
@@ -1856,11 +2459,81 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
         
         # Обрабатываем задачи по порядку
         task_index = 0
+        previous_url = None  # Сохраняем предыдущий URL для проверки зацикливания
+        processed_task_ids = set()  # Отслеживаем обработанные ID задач
+        
         while task_index < len(homework_tasks):
             task_data = homework_tasks.iloc[task_index]
             
+            # Проверяем текущий URL перед обработкой задачи
+            current_url = driver.current_url
+            
+            # Извлекаем ID задачи из URL для более точного сравнения
+            # URL может быть: /lessons/6010/tasks/1144363
+            current_task_id = None
+            previous_task_id = None
+            
+            match_current = re.search(r'/tasks/(\d+)', current_url)
+            if match_current:
+                current_task_id = match_current.group(1)
+            
+            if previous_url:
+                match_previous = re.search(r'/tasks/(\d+)', previous_url)
+                if match_previous:
+                    previous_task_id = match_previous.group(1)
+            
+            # Отладочная информация
+            print(f"\n  [DEBUG] Итерация {task_index + 1}/{len(homework_tasks)}")
+            print(f"  [DEBUG] Текущий URL: {current_url}")
+            print(f"  [DEBUG] Текущий ID задачи: {current_task_id}")
+            print(f"  [DEBUG] Предыдущий URL: {previous_url}")
+            print(f"  [DEBUG] Предыдущий ID задачи: {previous_task_id}")
+            print(f"  [DEBUG] Обработанные ID задач: {processed_task_ids}")
+            
+            # ВРЕМЕННО ОТКЛЮЧЕНО: Проверка зацикливания
+            # Проверяем, не обработали ли мы уже эту задачу
+            # if current_task_id and current_task_id in processed_task_ids:
+            #     print(f"\n  ⚠ ВНИМАНИЕ: Задача с ID {current_task_id} уже была обработана!")
+            #     print(f"  Пропускаем эту задачу и переходим к следующей.")
+            #     # Обновляем previous_url и увеличиваем task_index
+            #     previous_url = current_url
+            #     task_index += 1
+            #     continue
+            
+            # ВРЕМЕННО ОТКЛЮЧЕНО: Проверка зацикливания
+            # Проверяем зацикливание: сравниваем ID задач, если они есть
+            # if previous_url is not None and task_index > 0:
+            #     if current_task_id and previous_task_id:
+            #         # Если ID задач одинаковые, значит мы на той же задаче
+            #         if current_task_id == previous_task_id:
+            #             print(f"\n  ⚠ ВНИМАНИЕ: ID задачи не изменился после предыдущей задачи!")
+            #             print(f"  Текущий URL: {current_url}")
+            #             print(f"  Предыдущий URL: {previous_url}")
+            #             print(f"  ID задачи: {current_task_id}")
+            #             print(f"  Возможно, мы зациклились. Пропускаем эту задачу и переходим к следующей.")
+            #             # Обновляем previous_url перед переходом к следующей задаче
+            #             previous_url = current_url
+            #             task_index += 1
+            #             continue
+            #     elif current_url == previous_url:
+            #         # Если ID задач нет, сравниваем полный URL
+            #         print(f"\n  ⚠ ВНИМАНИЕ: URL не изменился после предыдущей задачи!")
+            #         print(f"  URL: {current_url}")
+            #         print(f"  Предыдущий URL: {previous_url}")
+            #         print(f"  Возможно, мы зациклились. Пропускаем эту задачу и переходим к следующей.")
+            #         # Обновляем previous_url перед переходом к следующей задаче
+            #         previous_url = current_url
+            #         task_index += 1
+            #         continue
+            
+            # Для первой задачи устанавливаем previous_url
+            if previous_url is None:
+                previous_url = current_url
+                print(f"  [DEBUG] Установлен previous_url для первой задачи: {previous_url}")
+            
             print(f"\n  {'='*50}")
             print(f"  Задача {task_index + 1}/{len(homework_tasks)}")
+            print(f"  Текущий URL: {current_url}")
             print(f"  {'='*50}")
             
             # Выводим описание, если есть
@@ -1889,6 +2562,7 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
                         ".styled__ButtonNext-qDZv, a.styled__Root-ebtVmd, a.fox-Anchor.styled__Root-ebtVmd"
                     )))
                     print("  Задача уже решена, нажимаем 'Дальше'...")
+                    url_before_next = driver.current_url
                     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", next_button)
                     time.sleep(0.3)
                     try:
@@ -1897,10 +2571,27 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
                         driver.execute_script("arguments[0].click();", next_button)
                     print("  ✓ Переход к следующей задаче")
                     time.sleep(2)
-                    task_index += 1
+                    
+                    # Проверяем, действительно ли мы перешли на новую задачу
+                    url_after_next = driver.current_url
+                    if url_before_next != url_after_next:
+                        print(f"  ✓ Переход подтвержден (URL изменился)")
+                        previous_url = url_after_next
+                        task_index += 1
+                    else:
+                        # URL не изменился - возможно это была последняя задача
+                        if "/tasks" not in url_after_next:
+                            print(f"  ✓ Похоже, мы вернулись на страницу курса - все задачи выполнены")
+                            return "homework_completed"
+                        else:
+                            print(f"  ⚠ URL не изменился, но мы все еще на странице задач")
+                            print(f"  Увеличиваем индекс чтобы избежать зацикливания")
+                            previous_url = url_after_next
+                            task_index += 1
                     continue
                 except:
                     print("  ⚠ Задача не решена и тип не определен, пропускаем")
+                    previous_url = driver.current_url  # Обновляем previous_url
                     task_index += 1
                     continue
             
@@ -1911,6 +2602,7 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
             # Пропускаем пустые ответы
             if not answer_text or answer_text == 'nan':
                 print(f"  ⚠ Пустой ответ в Excel, пропускаем задачу")
+                previous_url = driver.current_url  # Обновляем previous_url
                 task_index += 1
                 continue
             
@@ -1950,6 +2642,7 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
                     print(f"    Всего выбрано чекбоксов: {len(selected_values)}")
                 else:
                     print("  ⚠ Не найдены чекбоксы с соответствующим текстом")
+                    previous_url = driver.current_url  # Обновляем previous_url
                     task_index += 1
                     continue
             
@@ -2005,6 +2698,7 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
                                 pass
                     except:
                         pass
+                    previous_url = driver.current_url  # Обновляем previous_url
                     task_index += 1
                     continue
             
@@ -2019,10 +2713,20 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
                         print(f"      - '{target[:50]}...' -> '{element}'")
                     task_answer = mappings
                 else:
-                    print("  ⚠ Не удалось распарсить drag and drop ответ")
-                    print("  Форматы: JSON {'цель': 'элемент'}, список пар 'цель -> элемент; ...', или [('цель', 'элемент'), ...]")
-                    task_index += 1
-                    continue
+                    # Если ответ не парсится как drag_and_drop и это просто число или короткая строка,
+                    # возможно это на самом деле text задача
+                    answer_clean = answer_text.strip()
+                    if (answer_clean.isdigit() or 
+                        (len(answer_clean) < 50 and not answer_clean.startswith('{') and not answer_clean.startswith('['))):
+                        print("  Ответ похож на text (число или короткая строка), пробуем обработать как text...")
+                        task_answer = answer_text
+                        # Не меняем task_type, просто используем answer_text как есть
+                    else:
+                        print("  ⚠ Не удалось распарсить drag and drop ответ")
+                        print("  Форматы: JSON {'цель': 'элемент'}, список пар 'цель -> элемент; ...', или [('цель', 'элемент'), ...]")
+                        previous_url = driver.current_url  # Обновляем previous_url
+                        task_index += 1
+                        continue
             
             elif task_type == "code":
                 print("  Обрабатываем code задачу...")
@@ -2035,6 +2739,10 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
             # Обрабатываем задачу
             if task_answer is not None:
                 print(f"\n  Обрабатываем задачу...")
+                
+                # Сохраняем текущий URL перед обработкой задачи
+                url_before = driver.current_url
+                
                 result = handle_task(driver, task_answer)
                 
                 if result == "homework_completed":
@@ -2043,17 +2751,85 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
                     return "homework_completed"
                 elif result:
                     print(f"  ✓ Задача {task_index + 1} обработана успешно")
-                    task_index += 1
-                    # После отправки формы и нажатия "Дальше" мы уже на следующей задаче
-                    # Ждем немного для загрузки следующей страницы
-                    time.sleep(2)
+                    
+                    # Проверяем, действительно ли мы перешли на новую задачу
+                    time.sleep(2)  # Ждем загрузки следующей страницы
+                    url_after = driver.current_url
+                    
+                    # Извлекаем ID задач из URL для сравнения
+                    task_id_before = None
+                    task_id_after = None
+                    
+                    match_before = re.search(r'/tasks/(\d+)', url_before)
+                    if match_before:
+                        task_id_before = match_before.group(1)
+                    
+                    match_after = re.search(r'/tasks/(\d+)', url_after)
+                    if match_after:
+                        task_id_after = match_after.group(1)
+                    
+                    # Если URL изменился И ID задачи изменился, значит мы перешли на новую задачу
+                    if url_before != url_after:
+                        if task_id_before and task_id_after and task_id_before != task_id_after:
+                            # ID задачи изменился - мы действительно на новой задаче
+                            print(f"  ✓ Переход на новую задачу подтвержден (ID задачи изменился)")
+                            print(f"  [DEBUG] ID задачи до: {task_id_before}")
+                            print(f"  [DEBUG] ID задачи после: {task_id_after}")
+                            print(f"  [DEBUG] URL до: {url_before}")
+                            print(f"  [DEBUG] URL после: {url_after}")
+                            # Добавляем предыдущую задачу в список обработанных
+                            processed_task_ids.add(task_id_before)
+                            previous_url = url_after  # Обновляем previous_url
+                            print(f"  [DEBUG] Обновлен previous_url: {previous_url}")
+                            task_index += 1
+                            print(f"  [DEBUG] Увеличен task_index до: {task_index}")
+                        elif not task_id_before and task_id_after:
+                            # Перешли с главной страницы на страницу задачи - это нормально
+                            # Это означает, что мы обработали первую задачу из списка и перешли на её страницу
+                            print(f"  ✓ Переход на страницу задачи подтвержден")
+                            print(f"  [DEBUG] URL до: {url_before}")
+                            print(f"  [DEBUG] URL после: {url_after}")
+                            print(f"  [DEBUG] ID задачи: {task_id_after}")
+                            # Добавляем текущую задачу в список обработанных
+                            processed_task_ids.add(task_id_after)
+                            previous_url = url_after  # Обновляем previous_url
+                            print(f"  [DEBUG] Обновлен previous_url: {previous_url}")
+                            # Увеличиваем task_index, потому что мы обработали задачу из списка
+                            task_index += 1
+                            print(f"  [DEBUG] Увеличен task_index до: {task_index} (первая задача обработана)")
+                        else:
+                            # URL изменился, но ID задачи тот же - странно, но продолжаем
+                            print(f"  ⚠ URL изменился, но ID задачи остался тем же")
+                            print(f"  [DEBUG] URL до: {url_before}")
+                            print(f"  [DEBUG] URL после: {url_after}")
+                            print(f"  [DEBUG] ID задачи: {task_id_after}")
+                            previous_url = url_after  # Обновляем previous_url
+                            # Не увеличиваем task_index - возможно, это была ошибка
+                    else:
+                        # URL не изменился - возможно это была последняя задача или произошла ошибка
+                        print(f"  ⚠ URL не изменился после обработки задачи")
+                        print(f"  URL до: {url_before}")
+                        print(f"  URL после: {url_after}")
+                        
+                        # Проверяем, может быть это последняя задача и мы вернулись на страницу курса
+                        if "/tasks" not in url_after:
+                            print(f"  ✓ Похоже, мы вернулись на страницу курса - все задачи выполнены")
+                            return "homework_completed"
+                        else:
+                            # Мы все еще на странице задач - увеличиваем индекс, чтобы не зациклиться
+                            print(f"  ⚠ Все еще на странице задач, увеличиваем индекс чтобы избежать зацикливания")
+                            previous_url = url_after  # Обновляем previous_url
+                            task_index += 1
                 else:
                     print(f"  ⚠ Ошибка при обработке задачи {task_index + 1}")
+                    previous_url = driver.current_url  # Обновляем previous_url
                     task_index += 1
                     # Продолжаем со следующей задачей
             else:
                 print("  ⚠ Не удалось подготовить ответ для задачи")
+                previous_url = driver.current_url  # Обновляем previous_url
                 task_index += 1
+                continue
         
         print(f"\n  ✓ Все задачи для homework {lesson_id} обработаны!")
         return True
@@ -2660,6 +3436,11 @@ def main():
                             # Полностью перезагружаем страницу, чтобы обновить статус заданий
                             driver.get(MAIN_PAGE_URL)
                             time.sleep(3)  # Ждем обновления страницы
+                            
+                            # Принудительно обновляем страницу для обновления статуса заданий
+                            driver.refresh()
+                            time.sleep(2)
+                            
                             # Продолжаем основной цикл для обработки других заданий
                             # Список заданий будет обновлен в начале следующей итерации цикла
                             continue
