@@ -15,12 +15,12 @@ __pycache__/
 venv/
 env/
 ENV/
-
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+~$*
 
 # Тестовые файлы
 test*.xlsx
