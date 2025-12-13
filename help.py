@@ -366,8 +366,22 @@ def detect_task_type(driver):
             draggable = task_form.find_elements(By.CSS_SELECTOR, "[draggable='true']")
             link_rows = task_form.find_elements(By.CSS_SELECTOR, ".LinkTaskRow_linkRow__36TU1")
             if draggable and link_rows:
-                print("  Тип задачи: DRAG_AND_DROP (перетаскивание)")
-                return "drag_and_drop"
+                # Проверяем, является ли это multi-use drag and drop (LinkTask)
+                # В multi-use типе элементы остаются в панели опций после перетаскивания
+                try:
+                    # Проверяем наличие панели опций LinkTask
+                    link_options_panel = task_form.find_elements(By.CSS_SELECTOR, ".LinkTask_optionsPanel__GLzIR")
+                    # Проверяем описание, которое указывает на multi-use
+                    description_text = task_form.find_elements(By.XPATH, ".//*[contains(text(), 'каждый может быть использован несколько раз') or contains(text(), 'может быть использован несколько раз')]")
+                    if link_options_panel or description_text:
+                        print("  Тип задачи: DRAG_AND_DROP (multi-use перетаскивание - элементы остаются в панели)")
+                        return "drag_and_drop"  # Используем тот же тип, но обрабатываем по-другому
+                    else:
+                        print("  Тип задачи: DRAG_AND_DROP (обычное перетаскивание)")
+                        return "drag_and_drop"
+                except:
+                    print("  Тип задачи: DRAG_AND_DROP (перетаскивание)")
+                    return "drag_and_drop"
         except:
             pass
         
@@ -629,11 +643,23 @@ def handle_radio_task(driver, answer):
 def handle_drag_and_drop_task(driver, mappings):
     """Обрабатывает задачу типа drag and drop (перетаскивание)
     mappings - словарь {текст_цели: текст_элемента} или список кортежей [(текст_цели, текст_элемента)]
-    Поддерживает два типа:
+    Поддерживает три типа:
     1. Текстовые элементы - сопоставление по тексту
-    2. Изображения - сопоставление по индексу (element_text должен быть числом или строкой с числом)"""
+    2. Изображения - сопоставление по индексу (element_text должен быть числом или строкой с числом)
+    3. Multi-use drag and drop - элементы остаются в панели опций и могут использоваться несколько раз"""
     try:
         task_form = get_task_form(driver)
+        
+        # Определяем, является ли это multi-use drag and drop
+        is_multi_use = False
+        try:
+            link_options_panel = task_form.find_elements(By.CSS_SELECTOR, ".LinkTask_optionsPanel__GLzIR")
+            description_text = task_form.find_elements(By.XPATH, ".//*[contains(text(), 'каждый может быть использован несколько раз') or contains(text(), 'может быть использован несколько раз')]")
+            if link_options_panel or description_text:
+                is_multi_use = True
+                print("  [DEBUG] Обнаружен multi-use drag and drop - элементы остаются в панели опций")
+        except:
+            pass
         
         # Находим все перетаскиваемые элементы
         draggable_elements = task_form.find_elements(By.CSS_SELECTOR, "[draggable='true']")
@@ -977,13 +1003,30 @@ def handle_drag_and_drop_task(driver, mappings):
                 for container in all_option_containers:
                     try:
                         # Проверяем, что контейнер еще не находится в drop area
-                        try:
-                            parent = container.find_element(By.XPATH, "./ancestor::div[contains(@class, 'LinkTaskRow_linkRowContent__XBn6u')]")
-                            # Контейнер уже в drop area, пропускаем
-                            continue
-                        except:
-                            # Контейнер еще не перемещен, проверяем текст
-                            pass
+                        # Для multi-use типа элементы остаются в панели опций, поэтому ищем в панели опций
+                        if not is_multi_use:
+                            try:
+                                parent = container.find_element(By.XPATH, "./ancestor::div[contains(@class, 'LinkTaskRow_linkRowContent__XBn6u')]")
+                                # Контейнер уже в drop area, пропускаем
+                                continue
+                            except:
+                                # Контейнер еще не перемещен, проверяем текст
+                                pass
+                        else:
+                            # Для multi-use типа: ищем элементы только в панели опций
+                            try:
+                                options_panel = container.find_element(By.XPATH, "./ancestor::div[contains(@class, 'LinkTask_optionsPanel__GLzIR') or contains(@class, 'Options_root__q5QuO') or contains(@class, 'Options_optionsRows__JttWG')]")
+                                # Элемент в панели опций - это хорошо, продолжаем
+                            except:
+                                # Элемент не в панели опций, возможно уже перемещен, но для multi-use это нормально
+                                # Проверяем, находится ли он в drop area - если да, пропускаем (ищем оригинал в панели)
+                                try:
+                                    parent = container.find_element(By.XPATH, "./ancestor::div[contains(@class, 'LinkTaskRow_linkRowContent__XBn6u')]")
+                                    # Элемент в drop area, пропускаем (ищем оригинал в панели опций)
+                                    continue
+                                except:
+                                    # Элемент не в drop area, возможно в панели опций, продолжаем
+                                    pass
                         
                         # Проверяем, есть ли внутри draggable элемент
                         try:
@@ -1081,10 +1124,12 @@ def handle_drag_and_drop_task(driver, mappings):
                     success = driver.execute_script("""
                         var source = arguments[0];
                         var target = arguments[1];
+                        var isMultiUse = arguments[2] || false;
                         
                         try {
                             // Проверяем, не находится ли элемент уже в целевой области
-                            if (target.contains(source) || target.contains(source.parentElement)) {
+                            // Для multi-use типа это не важно, так как элемент остается в панели
+                            if (!isMultiUse && (target.contains(source) || target.contains(source.parentElement))) {
                                 return true; // Уже перемещен
                             }
                             
@@ -1101,6 +1146,33 @@ def handle_drag_and_drop_task(driver, mappings):
                             
                             if (!optionContainer) {
                                 return false;
+                            }
+                            
+                            // Для multi-use типа: проверяем, что элемент находится в панели опций
+                            if (isMultiUse) {
+                                var optionsPanel = optionContainer.closest('.LinkTask_optionsPanel__GLzIR, .Options_root__q5QuO, .Options_optionsRows__JttWG');
+                                if (!optionsPanel) {
+                                    // Если элемент не в панели опций, значит он уже перемещен
+                                    // Для multi-use это нормально - мы можем использовать его снова
+                                    // Но нужно найти исходный элемент в панели опций
+                                    var form = target.closest('form');
+                                    if (form) {
+                                        var allOptions = form.querySelectorAll('.LinkTask_optionsPanel__GLzIR [draggable="true"], .Options_root__q5QuO [draggable="true"]');
+                                        // Ищем элемент с таким же текстом
+                                        var sourceText = source.textContent.trim() || source.querySelector('.MathContent_content__2a8XE')?.textContent.trim() || '';
+                                        for (var i = 0; i < allOptions.length; i++) {
+                                            var opt = allOptions[i];
+                                            var optText = opt.textContent.trim() || opt.querySelector('.MathContent_content__2a8XE')?.textContent.trim() || '';
+                                            if (optText === sourceText && optText !== '') {
+                                                draggableElement = opt;
+                                                optionContainer = draggableElement.closest('.OptionsSlide_option__PBAys') || 
+                                                                  draggableElement.closest('.styled__Wrapper-cixSOf') ||
+                                                                  draggableElement.parentElement;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             
                             // Получаем ID или данные элемента для передачи
@@ -1165,8 +1237,10 @@ def handle_drag_and_drop_task(driver, mappings):
                             dropEvent.preventDefault();
                             target.dispatchEvent(dropEvent);
                             
-                            // 7. Удаляем исходный элемент
-                            optionContainer.remove();
+                            // 7. Удаляем исходный элемент только если это НЕ multi-use тип
+                            if (!isMultiUse) {
+                                optionContainer.remove();
+                            }
                             
                             // 8. Инициируем dragend
                             var dragEndEvent = new DragEvent('dragend', { 
@@ -1327,7 +1401,7 @@ def handle_drag_and_drop_task(driver, mappings):
                             console.error('Ошибка при перемещении:', e);
                             return false;
                         }
-                    """, source_element, target_area)
+                    """, source_element, target_area, is_multi_use)
                     
                     time.sleep(1)  # Увеличиваем время ожидания для обновления UI и состояния формы
                     
@@ -1940,7 +2014,50 @@ def submit_task_form(driver):
                     driver.execute_script("arguments[0].click();", next_button)
                     print("  ✓ Нажата кнопка 'Дальше' (через JS)")
                 
-                time.sleep(0.3)  # Уменьшено время ожидания перехода
+                # Ждем загрузки новой страницы - проверяем изменение URL или появление новой формы
+                print("  Ожидаем загрузки новой страницы задачи...")
+                try:
+                    # Сохраняем текущий URL перед переходом
+                    url_before = driver.current_url
+                    
+                    # Ждем изменения URL или появления новой формы задачи
+                    wait = WebDriverWait(driver, 5)
+                    try:
+                        # Ждем изменения URL
+                        wait.until(lambda d: d.current_url != url_before)
+                        print(f"  ✓ URL изменился: {driver.current_url}")
+                        # Дополнительно ждем загрузки новой формы задачи
+                        time.sleep(0.5)
+                        wait.until(EC.presence_of_element_located((By.ID, "taskForm")))
+                        print("  ✓ Новая форма задачи загружена")
+                    except:
+                        # Если URL не изменился, ждем появления новой формы задачи
+                        # (старая форма должна исчезнуть и появиться новая)
+                        try:
+                            wait.until(EC.staleness_of(task_form))
+                            print("  ✓ Старая форма исчезла, ждем появления новой...")
+                            time.sleep(0.5)
+                            # Ждем появления новой формы
+                            wait.until(EC.presence_of_element_located((By.ID, "taskForm")))
+                            print("  ✓ Новая форма задачи загружена")
+                        except:
+                            # Если ничего не произошло, просто ждем немного
+                            print("  ⚠ Не удалось определить загрузку новой страницы, ждем 2 секунды...")
+                            time.sleep(2)
+                            # Пробуем обновить форму задачи
+                            try:
+                                wait.until(EC.presence_of_element_located((By.ID, "taskForm")))
+                                print("  ✓ Форма задачи найдена после ожидания")
+                            except:
+                                print("  ⚠ Форма задачи не найдена после ожидания")
+                    
+                    # Дополнительная проверка: убеждаемся, что форма задачи обновилась
+                    # Ждем немного, чтобы React успел обновить содержимое
+                    time.sleep(1)
+                except Exception as e:
+                    print(f"  ⚠ Ошибка при ожидании загрузки новой страницы: {e}")
+                    time.sleep(2)  # Fallback: ждем 2 секунды для загрузки
+                
                 return True
             else:
                 # Кнопка "Дальше" не найдена - это последний вопрос домашнего задания
@@ -2117,14 +2234,19 @@ def find_best_radio_match(answer_text, radios):
             # Это соответствует структуре: <input type="radio"> <div class="styled__Label">...</div>
             if not label_text:
                 try:
-                    # Ищем следующий sibling div с классом, содержащим styled__Label или MathContent_root
+                    # Сначала пробуем найти span с точным классом MathContent_content__2a8XE в следующем sibling div
                     label_div = radio.find_element(By.XPATH, "./following-sibling::div[contains(@class, 'styled__Label') or contains(@class, 'MathContent_root')]")
-                    # Внутри может быть span с классом MathContent_content или MathContent_content__2a8XE
                     try:
-                        span = label_div.find_element(By.XPATH, ".//span[contains(@class, 'MathContent_content')]")
+                        # Ищем span с точным классом MathContent_content__2a8XE
+                        span = label_div.find_element(By.CSS_SELECTOR, "span.MathContent_content__2a8XE")
                         label_text = span.text.strip()
                     except:
-                        label_text = label_div.text.strip()
+                        try:
+                            # Если не нашли, пробуем найти любой span с классом содержащим MathContent_content
+                            span = label_div.find_element(By.XPATH, ".//span[contains(@class, 'MathContent_content')]")
+                            label_text = span.text.strip()
+                        except:
+                            label_text = label_div.text.strip()
                 except:
                     pass
             
@@ -2217,13 +2339,13 @@ def find_best_radio_match(answer_text, radios):
     
     # Выводим найденные варианты для отладки
     print(f"    [DEBUG] Найдено кандидатов: {len(candidates)}")
-    for i, (radio, value, label_text, label_normalized, _) in enumerate(candidates[:3]):  # Показываем первые 3
-        print(f"      {i+1}. value={value}, text='{label_text[:50]}...'")
+    for i, (radio, value, label_text, label_normalized, _) in enumerate(candidates[:5]):  # Показываем первые 5
+        print(f"      {i+1}. value={value}, text='{label_text[:80]}...' (длина: {len(label_text)})")
     
     # Сортируем по длине (сначала самые длинные) для приоритета полных ответов
     candidates.sort(key=lambda x: x[4], reverse=True)
     
-    print(f"    [DEBUG] Ищем совпадение для: '{answer_text[:50]}...' (нормализовано: '{answer_normalized[:50]}...')")
+    print(f"    [DEBUG] Ищем совпадение для: '{answer_text[:100]}...' (нормализовано: '{answer_normalized[:100]}...', длина: {len(answer_normalized)})")
     
     # 1. Ищем точное совпадение
     for radio, value, label_text, label_normalized, _ in candidates:
@@ -2288,6 +2410,27 @@ def find_best_radio_match(answer_text, radios):
                 if label_normalized in answer_normalized:
                     print(f"    [DEBUG] Найдено совпадение: вариант содержится в ответе")
                     return radio, value
+    
+    # 2.5. Ищем совпадение по ключевым словам (если точное совпадение не найдено)
+    # Извлекаем ключевые слова из ответа (слова длиннее 3 символов)
+    answer_words = [w for w in answer_normalized.split() if len(w) > 3]
+    if len(answer_words) >= 3:  # Только если есть достаточно ключевых слов
+        best_match = None
+        best_score = 0
+        for radio, value, label_text, label_normalized, _ in candidates:
+            # Считаем, сколько ключевых слов из ответа есть в варианте
+            label_words = set(label_normalized.split())
+            matching_words = sum(1 for word in answer_words if word in label_words)
+            score = matching_words / len(answer_words)  # Процент совпадения ключевых слов
+            
+            # Если совпало более 70% ключевых слов, это хороший кандидат
+            if score > best_score and score >= 0.7:
+                best_match = (radio, value)
+                best_score = score
+        
+        if best_match:
+            print(f"    [DEBUG] Найдено совпадение по ключевым словам (score: {best_score:.2%})")
+            return best_match[0], best_match[1]
     
     # 3. Ищем вариант, который содержится в ответе, но только если он составляет значительную часть
     # И только если нет варианта, который содержит полный ответ
@@ -3095,22 +3238,72 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
                             try:
                                 value = radio.get_attribute("value")
                                 # Пробуем получить текст из правильного места
+                                label_text = None
                                 try:
                                     label_div = radio.find_element(By.XPATH, "./following-sibling::div[contains(@class, 'styled__Label') or contains(@class, 'MathContent_root')]")
                                     try:
-                                        span = label_div.find_element(By.XPATH, ".//span[contains(@class, 'MathContent_content')]")
-                                        label_text = span.text.strip()[:50]
+                                        # Сначала пробуем найти span с точным классом MathContent_content__2a8XE
+                                        span = label_div.find_element(By.CSS_SELECTOR, "span.MathContent_content__2a8XE")
+                                        label_text = span.text.strip()
                                     except:
-                                        label_text = label_div.text.strip()[:50]
+                                        try:
+                                            span = label_div.find_element(By.XPATH, ".//span[contains(@class, 'MathContent_content')]")
+                                            label_text = span.text.strip()
+                                        except:
+                                            label_text = label_div.text.strip()
                                 except:
-                                    parent = radio.find_element(By.XPATH, "./..")
-                                    label_text = parent.text.strip()[:50]
-                                print(f"      - value={value}: '{label_text}...'")
-                            except:
-                                pass
+                                    try:
+                                        parent = radio.find_element(By.XPATH, "./..")
+                                        label_text = parent.text.strip()
+                                    except:
+                                        pass
+                                
+                                if label_text:
+                                    print(f"      - value={value}: '{label_text[:80]}...' (длина: {len(label_text)})")
+                                else:
+                                    print(f"      - value={value}: [не удалось извлечь текст]")
+                            except Exception as e:
+                                print(f"      - [ошибка при извлечении текста: {e}]")
                     except:
                         pass
-                    previous_url = driver.current_url  # Обновляем previous_url
+                    
+                    # ВАЖНО: Если не найдено совпадение, не пропускаем задачу, а пытаемся выбрать первый вариант
+                    # или останавливаемся с ошибкой, чтобы пользователь мог исправить Excel
+                    print(f"  ⚠ ОШИБКА: Не удалось найти совпадение для ответа из Excel")
+                    print(f"  ⚠ Ответ в Excel может быть неправильным или неполным")
+                    print(f"  ⚠ Пропускаем эту задачу и переходим к следующей")
+                    
+                    # Обновляем previous_url и увеличиваем индекс, чтобы избежать зацикливания
+                    previous_url = driver.current_url
+                    
+                    # Извлекаем task_id и добавляем в processed_task_ids, чтобы избежать зацикливания
+                    current_task_id = None
+                    try:
+                        match = re.search(r'/tasks/(\d+)', driver.current_url)
+                        if match:
+                            current_task_id = match.group(1)
+                            processed_task_ids.add(current_task_id)
+                            print(f"  [DEBUG] Добавлен task_id {current_task_id} в processed_task_ids для избежания зацикливания")
+                    except:
+                        pass
+                    
+                    # Проверяем, не зациклились ли мы на той же задаче
+                    if current_task_id and current_task_id in processed_task_ids:
+                        print(f"  ⚠ Обнаружено зацикливание на задаче {current_task_id}")
+                        print(f"  ⚠ Пытаемся перейти к следующей задаче вручную...")
+                        # Пробуем найти кнопку "Дальше" и перейти
+                        try:
+                            next_button = WebDriverWait(driver, 3).until(
+                                EC.element_to_be_clickable((By.XPATH, "//a[contains(@class, 'styled__ButtonNext')] | //button[contains(text(), 'Дальше')] | //a[contains(text(), 'Дальше')]"))
+                            )
+                            next_button.click()
+                            time.sleep(2)
+                            print(f"  ✓ Перешли к следующей задаче вручную")
+                            # Обновляем previous_url после перехода
+                            previous_url = driver.current_url
+                        except:
+                            print(f"  ⚠ Не удалось перейти к следующей задаче, пропускаем")
+                    
                     task_index += 1
                     continue
             
