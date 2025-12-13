@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('test.xlsx', '.'), ('test2.xlsx', '.')]
+datas = [('test1.xlsx', '.'), ('test.xlsx', '.'), ('test2.xlsx', '.')]
 binaries = []
 hiddenimports = ['pandas', 'openpyxl', 'selenium']
 tmp_ret = collect_all('selenium')

@@ -18,8 +18,9 @@ import json
 global_driver = None
 
 # URL главной страницы
+MAIN_PAGE_URL_1 = "https://kb.cifrium.ru/teacher/courses/770"  # Модуль 1
 MAIN_PAGE_URL = "https://kb.cifrium.ru/teacher/courses/771"  # Модуль 2
-MAIN_PAGE_URL_2 = "https://kb.cifrium.ru/teacher/courses/772"  # Следующий курс
+MAIN_PAGE_URL_2 = "https://kb.cifrium.ru/teacher/courses/772"  # Модуль 3
 HOME_URL = "https://kb.cifrium.ru/"
 LOGIN_URL = "https://kb.cifrium.ru/user/login"
 
@@ -627,13 +628,61 @@ def handle_radio_task(driver, answer):
 
 def handle_drag_and_drop_task(driver, mappings):
     """Обрабатывает задачу типа drag and drop (перетаскивание)
-    mappings - словарь {текст_цели: текст_элемента} или список кортежей [(текст_цели, текст_элемента)]"""
+    mappings - словарь {текст_цели: текст_элемента} или список кортежей [(текст_цели, текст_элемента)]
+    Поддерживает два типа:
+    1. Текстовые элементы - сопоставление по тексту
+    2. Изображения - сопоставление по индексу (element_text должен быть числом или строкой с числом)"""
     try:
         task_form = get_task_form(driver)
         
         # Находим все перетаскиваемые элементы
         draggable_elements = task_form.find_elements(By.CSS_SELECTOR, "[draggable='true']")
         print(f"  Найдено перетаскиваемых элементов: {len(draggable_elements)}")
+        
+        # Проверяем, есть ли изображения в draggable элементах
+        has_images = False
+        initial_image_order = []  # Сохраняем исходный порядок изображений для сопоставления по индексу
+        
+        for draggable in draggable_elements[:3]:  # Проверяем первые 3 элемента
+            try:
+                # Проверяем наличие изображения
+                image_content = draggable.find_element(By.CSS_SELECTOR, ".styled__ImageContent-eNVTVI, .styled__ImageContent")
+                has_images = True
+                print("  Обнаружены изображения в draggable элементах - используем сопоставление по индексу")
+                break
+            except:
+                continue
+        
+        # Если это изображения, сохраняем исходный порядок всех изображений
+        # Вместо сохранения самих элементов сохраняем их идентификаторы для избежания stale element reference
+        if has_images:
+            try:
+                # Используем JavaScript для получения стабильных идентификаторов изображений
+                image_identifiers = driver.execute_script("""
+                    var optionsPanel = arguments[0];
+                    var imageOptions = optionsPanel.querySelectorAll('.OptionsSlide_image__nlliP, .styled__ImageOption-ftJQiu, [draggable="true"]');
+                    var identifiers = [];
+                    
+                    for (var i = 0; i < imageOptions.length; i++) {
+                        var option = imageOptions[i];
+                        // Проверяем наличие изображения
+                        var hasImage = option.querySelector('.styled__ImageContent-eNVTVI, .styled__ImageContent');
+                        if (hasImage || option.getAttribute('draggable') === 'true') {
+                            // Находим draggable элемент
+                            var draggable = option.querySelector('[draggable="true"]') || option;
+                            // Сохраняем индекс в исходном порядке
+                            identifiers.push(i);
+                        }
+                    }
+                    
+                    return identifiers;
+                """, task_form.find_element(By.CSS_SELECTOR, ".Options_root__q5QuO, .Options_optionsRows__JttWG, .LinkTask_optionsPanel__GLzIR"))
+                
+                initial_image_order = image_identifiers
+                print(f"  [DEBUG] Сохранен исходный порядок изображений: {len(initial_image_order)} элементов")
+            except Exception as e:
+                print(f"  [DEBUG] Ошибка при сохранении порядка изображений: {e}")
+                initial_image_order = []
         
         # Находим все целевые области
         target_areas = task_form.find_elements(By.CSS_SELECTOR, ".LinkTaskRow_linkRowTarget__D79Ny")
@@ -656,64 +705,270 @@ def handle_drag_and_drop_task(driver, mappings):
             target_areas = task_form.find_elements(By.CSS_SELECTOR, ".LinkTaskRow_linkRowTarget__D79Ny")
             drop_areas = task_form.find_elements(By.CSS_SELECTOR, ".LinkTaskRow_linkRowContent__XBn6u")
             
-            # Находим элемент для перетаскивания по тексту
-            # Ищем во всех возможных контейнерах опций, не только с draggable='true'
+            # Находим элемент для перетаскивания
             source_element = None
             
-            # Сначала ищем среди элементов с draggable='true' (еще не перемещенные)
-            draggable_elements = task_form.find_elements(By.CSS_SELECTOR, "[draggable='true']")
-            for draggable in draggable_elements:
+            # Если это изображения, используем сопоставление по индексу
+            if has_images:
                 try:
-                    # Проверяем, что элемент еще не перемещен (не находится внутри drop area)
-                    try:
-                        # Если элемент уже внутри drop area, пропускаем его
-                        parent = draggable.find_element(By.XPATH, "./ancestor::div[contains(@class, 'LinkTaskRow_linkRowContent__XBn6u')]")
-                        # Элемент уже перемещен, пропускаем
-                        continue
-                    except:
-                        # Элемент еще не перемещен, продолжаем
-                        pass
+                    # Пытаемся преобразовать element_text в индекс (номер изображения)
+                    # Может быть числом или строкой с числом
+                    if isinstance(element_text, (int, float)):
+                        image_index = int(element_text) - 1  # Индексы начинаются с 0
+                    else:
+                        # Пробуем извлечь число из строки
+                        import re
+                        numbers = re.findall(r'\d+', str(element_text))
+                        if numbers:
+                            image_index = int(numbers[0]) - 1  # Берем первое число
+                        else:
+                            print(f"    ⚠ Не удалось извлечь индекс из '{element_text}', пропускаем")
+                            continue
                     
-                    # Пробуем извлечь текст из span с классом MathContent_content
-                    text = ""
-                    try:
-                        # Сначала пробуем найти span с классом MathContent_content
-                        span = draggable.find_element(By.XPATH, ".//span[contains(@class, 'MathContent_content')]")
-                        text = span.text.strip()
-                    except:
+                    print(f"    Ищем изображение по индексу: {image_index + 1}")
+                    
+                    # Используем сохраненный исходный порядок изображений, если он есть
+                    if initial_image_order and image_index < len(initial_image_order):
+                        # Находим актуальное изображение из текущего DOM по сохраненному индексу
                         try:
-                            # Если не нашли, пробуем найти в родительских элементах
-                            parent = draggable.find_element(By.XPATH, "./ancestor::div[contains(@class, 'OptionsSlide_option__PBAys')]")
-                            span = parent.find_element(By.XPATH, ".//span[contains(@class, 'MathContent_content')]")
+                            # Используем JavaScript для поиска актуального элемента по исходному индексу
+                            # Важно: находим изображения в исходном порядке, исключая уже перемещенные
+                            source_element = driver.execute_script("""
+                                var optionsPanel = arguments[0];
+                                var originalIndex = arguments[1];
+                                var allOptions = optionsPanel.querySelectorAll('.OptionsSlide_image__nlliP, .styled__ImageOption-ftJQiu');
+                                
+                                // Если не нашли по классам, ищем все draggable элементы
+                                if (allOptions.length === 0) {
+                                    allOptions = optionsPanel.querySelectorAll('[draggable="true"]');
+                                }
+                                
+                                // Собираем только изображения, которые еще не перемещены, в исходном порядке
+                                var imageElements = [];
+                                for (var i = 0; i < allOptions.length; i++) {
+                                    var option = allOptions[i];
+                                    
+                                    // Проверяем, что элемент еще не перемещен (не находится в drop area)
+                                    if (option.closest('.LinkTaskRow_linkRowContent__XBn6u')) {
+                                        continue; // Элемент уже перемещен
+                                    }
+                                    
+                                    // Проверяем наличие изображения
+                                    var hasImage = option.querySelector('.styled__ImageContent-eNVTVI, .styled__ImageContent');
+                                    if (hasImage || option.getAttribute('draggable') === 'true') {
+                                        // Находим draggable элемент внутри или используем сам option
+                                        var draggable = option.querySelector('[draggable="true"]');
+                                        if (!draggable && option.getAttribute('draggable') === 'true') {
+                                            draggable = option;
+                                        }
+                                        if (draggable) {
+                                            imageElements.push(draggable);
+                                        }
+                                    }
+                                }
+                                
+                                // Возвращаем элемент по исходному индексу (если он еще доступен)
+                                if (originalIndex < imageElements.length) {
+                                    return imageElements[originalIndex];
+                                }
+                                
+                                // Если индекс выходит за пределы, возможно некоторые изображения уже перемещены
+                                // Пробуем найти по позиции среди всех доступных изображений
+                                return null;
+                            """, task_form.find_element(By.CSS_SELECTOR, ".Options_root__q5QuO, .Options_optionsRows__JttWG, .LinkTask_optionsPanel__GLzIR"), image_index)
+                            
+                            if source_element:
+                                print(f"    ✓ Найдено изображение по исходному индексу {image_index + 1}")
+                            else:
+                                print(f"    ⚠ Изображение с индексом {image_index + 1} не найдено в текущем DOM, ищем среди доступных...")
+                        except Exception as e:
+                            print(f"    ⚠ Ошибка при поиске изображения по исходному индексу: {e}")
+                            source_element = None
+                    
+                    # Если не нашли по исходному порядку, используем обычный поиск
+                    if not source_element:
+                        # Получаем все изображения из панели опций (еще не перемещенные)
+                        # Ищем в панели опций Options_root__q5QuO или Options_optionsRows__JttWG
+                        available_images = []
+                        
+                        try:
+                            # Ищем панель опций
+                            options_panel = task_form.find_element(By.CSS_SELECTOR, ".Options_root__q5QuO, .Options_optionsRows__JttWG, .LinkTask_optionsPanel__GLzIR")
+                            
+                            # Находим все элементы с изображениями в панели опций
+                            # Ищем элементы с классом OptionsSlide_image__nlliP или styled__ImageOption
+                            # Сначала ищем все контейнеры опций с изображениями
+                            image_containers = options_panel.find_elements(By.CSS_SELECTOR, ".OptionsSlide_image__nlliP, .styled__ImageOption-ftJQiu")
+                            
+                            # Если не нашли по классам, ищем все элементы с draggable='true'
+                            if not image_containers:
+                                image_containers = options_panel.find_elements(By.CSS_SELECTOR, "[draggable='true']")
+                            
+                            for option in image_containers:
+                                try:
+                                    # Проверяем, что элемент еще не перемещен (не находится в drop area)
+                                    try:
+                                        parent = option.find_element(By.XPATH, "./ancestor::div[contains(@class, 'LinkTaskRow_linkRowContent__XBn6u')]")
+                                        continue  # Элемент уже перемещен
+                                    except:
+                                        pass
+                                    
+                                    # Проверяем наличие изображения
+                                    has_image = False
+                                    try:
+                                        image_content = option.find_element(By.CSS_SELECTOR, ".styled__ImageContent-eNVTVI, .styled__ImageContent")
+                                        has_image = True
+                                    except:
+                                        # Проверяем, есть ли изображение в дочерних элементах
+                                        try:
+                                            image_content = option.find_element(By.CSS_SELECTOR, ".styled__ImageContent")
+                                            has_image = True
+                                        except:
+                                            pass
+                                    
+                                    # Если есть изображение или это draggable элемент, добавляем
+                                    if has_image or option.get_attribute("draggable") == "true":
+                                        # Находим draggable элемент внутри или используем сам option
+                                        try:
+                                            draggable = option.find_element(By.CSS_SELECTOR, "[draggable='true']")
+                                            # Проверяем еще раз, что draggable не перемещен
+                                            try:
+                                                parent = draggable.find_element(By.XPATH, "./ancestor::div[contains(@class, 'LinkTaskRow_linkRowContent__XBn6u')]")
+                                                continue  # Элемент уже перемещен
+                                            except:
+                                                available_images.append(draggable)
+                                        except:
+                                            # Если нет draggable внутри, но option сам draggable
+                                            if option.get_attribute("draggable") == "true":
+                                                available_images.append(option)
+                                except:
+                                    continue
+                        except:
+                            # Fallback: используем старый метод
+                            draggable_elements = task_form.find_elements(By.CSS_SELECTOR, "[draggable='true']")
+                            for draggable in draggable_elements:
+                                try:
+                                    # Проверяем, что элемент еще не перемещен
+                                    try:
+                                        parent = draggable.find_element(By.XPATH, "./ancestor::div[contains(@class, 'LinkTaskRow_linkRowContent__XBn6u')]")
+                                        continue  # Элемент уже перемещен
+                                    except:
+                                        pass
+                                    
+                                    # Проверяем наличие изображения
+                                    try:
+                                        image_content = draggable.find_element(By.CSS_SELECTOR, ".styled__ImageContent-eNVTVI, .styled__ImageContent")
+                                        available_images.append(draggable)
+                                    except:
+                                        # Если нет изображения, но это draggable элемент, тоже добавляем
+                                        available_images.append(draggable)
+                                except:
+                                    continue
+                        
+                        print(f"    [DEBUG] Доступно изображений: {len(available_images)}")
+                        
+                        if len(available_images) == 0:
+                            print(f"    ⚠ Не найдено доступных изображений, пробуем альтернативный метод...")
+                            # Альтернативный метод: ищем все изображения в панели опций без фильтрации по draggable
+                            try:
+                                options_panel = task_form.find_element(By.CSS_SELECTOR, ".Options_root__q5QuO, .Options_optionsRows__JttWG, .LinkTask_optionsPanel__GLzIR")
+                                all_image_elements = options_panel.find_elements(By.CSS_SELECTOR, ".styled__ImageContent-eNVTVI, .styled__ImageContent")
+                                print(f"    [DEBUG] Найдено элементов с изображениями в панели: {len(all_image_elements)}")
+                                
+                                # Находим родительские draggable элементы
+                                for img_elem in all_image_elements:
+                                    try:
+                                        # Находим ближайший draggable родитель
+                                        draggable_parent = img_elem.find_element(By.XPATH, "./ancestor::*[@draggable='true'][1]")
+                                        # Проверяем, что элемент еще не перемещен
+                                        try:
+                                            parent = draggable_parent.find_element(By.XPATH, "./ancestor::div[contains(@class, 'LinkTaskRow_linkRowContent__XBn6u')]")
+                                            continue  # Элемент уже перемещен
+                                        except:
+                                            available_images.append(draggable_parent)
+                                    except:
+                                        continue
+                                
+                                print(f"    [DEBUG] После альтернативного поиска доступно изображений: {len(available_images)}")
+                            except Exception as alt_e:
+                                print(f"    ⚠ Ошибка при альтернативном поиске: {alt_e}")
+                        
+                        if 0 <= image_index < len(available_images):
+                            source_element = available_images[image_index]
+                            print(f"    ✓ Найдено изображение по индексу {image_index + 1}")
+                        else:
+                            print(f"    ⚠ Индекс {image_index + 1} выходит за пределы доступных изображений (всего: {len(available_images)})")
+                            # Пробуем найти по порядковому номеру среди всех изображений в панели
+                            if len(available_images) > 0:
+                                print(f"    [DEBUG] Пробуем использовать последнее доступное изображение...")
+                                source_element = available_images[-1]
+                                print(f"    ⚠ Используем последнее доступное изображение (индекс {len(available_images)})")
+                            else:
+                                continue
+                            
+                except Exception as e:
+                    print(f"    ⚠ Ошибка при поиске изображения по индексу: {e}")
+                    continue
+            
+            # Если это не изображения или не удалось найти по индексу, используем поиск по тексту
+            if not source_element:
+                # Находим элемент для перетаскивания по тексту
+                # Ищем во всех возможных контейнерах опций, не только с draggable='true'
+                
+                # Сначала ищем среди элементов с draggable='true' (еще не перемещенные)
+                draggable_elements = task_form.find_elements(By.CSS_SELECTOR, "[draggable='true']")
+                for draggable in draggable_elements:
+                    try:
+                        # Проверяем, что элемент еще не перемещен (не находится внутри drop area)
+                        try:
+                            # Если элемент уже внутри drop area, пропускаем его
+                            parent = draggable.find_element(By.XPATH, "./ancestor::div[contains(@class, 'LinkTaskRow_linkRowContent__XBn6u')]")
+                            # Элемент уже перемещен, пропускаем
+                            continue
+                        except:
+                            # Элемент еще не перемещен, продолжаем
+                            pass
+                        
+                        # Пробуем извлечь текст из span с классом MathContent_content
+                        text = ""
+                        try:
+                            # Сначала пробуем найти span с классом MathContent_content
+                            span = draggable.find_element(By.XPATH, ".//span[contains(@class, 'MathContent_content')]")
                             text = span.text.strip()
                         except:
                             try:
-                                # Пробуем получить текст напрямую из элемента
-                                text = draggable.text.strip()
+                                # Если не нашли, пробуем найти в родительских элементах
+                                parent = draggable.find_element(By.XPATH, "./ancestor::div[contains(@class, 'OptionsSlide_option__PBAys')]")
+                                span = parent.find_element(By.XPATH, ".//span[contains(@class, 'MathContent_content')]")
+                                text = span.text.strip()
                             except:
-                                # Последняя попытка - через JavaScript
                                 try:
-                                    text = driver.execute_script("""
-                                        var el = arguments[0];
-                                        var span = el.querySelector('.MathContent_content__2a8XE');
-                                        if (span) return span.textContent.trim();
-                                        return el.textContent.trim();
-                                    """, draggable)
+                                    # Пробуем получить текст напрямую из элемента
+                                    text = draggable.text.strip()
                                 except:
-                                    text = ""
-                    
-                    # Нормализуем тексты для сравнения
-                    if text:
-                        text_normalized = ' '.join(text.lower().split())
-                        element_normalized = ' '.join(element_text.lower().split())
+                                    # Последняя попытка - через JavaScript
+                                    try:
+                                        text = driver.execute_script("""
+                                            var el = arguments[0];
+                                            var span = el.querySelector('.MathContent_content__2a8XE');
+                                            if (span) return span.textContent.trim();
+                                            return el.textContent.trim();
+                                        """, draggable)
+                                    except:
+                                        text = ""
                         
-                        # Проверяем совпадение (частичное или полное)
-                        if element_normalized in text_normalized or text_normalized in element_normalized:
-                            source_element = draggable
-                            print(f"      Найден draggable элемент: '{text}'")
-                            break
-                except:
-                    continue
+                        # Нормализуем тексты для сравнения
+                        if text:
+                            text_normalized = ' '.join(text.lower().split())
+                            element_normalized = ' '.join(element_text.lower().split())
+                            
+                            # Проверяем совпадение (частичное или полное)
+                            if element_normalized in text_normalized or text_normalized in element_normalized:
+                                source_element = draggable
+                                print(f"      Найден draggable элемент: '{text}'")
+                                break
+                    except:
+                        continue
             
             # Если не нашли среди draggable элементов, ищем во всех контейнерах опций
             if not source_element:
@@ -2069,24 +2324,89 @@ def find_checkbox_matches(answer_parts, checkboxes):
     checkbox_candidates = []
     for checkbox in checkboxes:
         try:
-            parent = checkbox.find_element(By.XPATH, "./..")
-            label_text = parent.text.strip()
+            label_text = None
             value = checkbox.get_attribute("value")
-            label_normalized = ' '.join(label_text.lower().split())
-            checkbox_candidates.append((value, label_text, label_normalized, len(label_normalized)))
-        except:
+            
+            # Способ 1: Ищем следующий sibling div с классом styled__Label или MathContent_root
+            # Структура: <input> <div class="styled__Label"> <span class="MathContent_content">текст</span> </div>
+            try:
+                label_div = checkbox.find_element(By.XPATH, "./following-sibling::div[contains(@class, 'styled__Label') or contains(@class, 'MathContent_root')]")
+                try:
+                    # Сначала пробуем найти span с классом MathContent_content__2a8XE или MathContent_content
+                    span = label_div.find_element(By.XPATH, ".//span[contains(@class, 'MathContent_content')]")
+                    label_text = span.text.strip()
+                except:
+                    # Если span не найден, берем текст из div
+                    label_text = label_div.text.strip()
+            except:
+                pass
+            
+            # Способ 2: Если не нашли, пробуем найти через XPath с более точным селектором
+            if not label_text:
+                try:
+                    # Ищем div с классом, содержащим styled__Label, который является sibling input
+                    label_div = checkbox.find_element(By.XPATH, "./following-sibling::div[contains(@class, 'styled__Label-iUCEmK') or contains(@class, 'MathContent_root')]")
+                    # Внутри ищем span с MathContent_content
+                    try:
+                        span = label_div.find_element(By.CSS_SELECTOR, "span.MathContent_content__2a8XE, span[class*='MathContent_content']")
+                        label_text = span.text.strip()
+                    except:
+                        label_text = label_div.text.strip()
+                except:
+                    pass
+            
+            # Способ 3: Если не нашли, пробуем родительский элемент
+            if not label_text:
+                try:
+                    parent = checkbox.find_element(By.XPATH, "./..")
+                    # В родителе ищем span с MathContent_content
+                    try:
+                        span = parent.find_element(By.CSS_SELECTOR, "span.MathContent_content__2a8XE, span[class*='MathContent_content']")
+                        label_text = span.text.strip()
+                    except:
+                        label_text = parent.text.strip()
+                except:
+                    pass
+            
+            # Способ 4: Ищем label по id
+            if not label_text:
+                try:
+                    label_id = checkbox.get_attribute("id")
+                    if label_id:
+                        label = checkbox.find_element(By.XPATH, f".//ancestor::form//label[@for='{label_id}']")
+                        label_text = label.text.strip()
+                except:
+                    pass
+            
+            if label_text:
+                # Нормализуем текст: приводим к нижнему регистру и убираем лишние пробелы
+                label_normalized = ' '.join(label_text.lower().split())
+                checkbox_candidates.append((value, label_text, label_normalized, len(label_normalized)))
+        except Exception as e:
+            print(f"    [DEBUG] Ошибка при извлечении текста чекбокса: {e}")
             continue
+    
+    print(f"    [DEBUG] Найдено кандидатов чекбоксов: {len(checkbox_candidates)}")
+    for i, (value, label_text, label_normalized, _) in enumerate(checkbox_candidates[:5], 1):
+        print(f"      {i}. value={value}, text='{label_text[:60]}...'")
     
     # Сортируем по длине (сначала самые длинные) для приоритета полных ответов
     checkbox_candidates.sort(key=lambda x: x[3], reverse=True)
     
     for answer_part in answer_parts:
+        # Нормализуем ответ так же, как и варианты
         answer_normalized = ' '.join(answer_part.lower().split())
+        print(f"    [DEBUG] Ищем совпадение для: '{answer_part}' (нормализовано: '{answer_normalized}')")
         best_match = None
+        
+        # Создаем версию с заменой похожих символов для более гибкого сравнения
+        # Кириллическая 'і' и латинская 'i', кириллическая 'е' и латинская 'e'
+        answer_normalized_flexible = answer_normalized.replace('і', 'i').replace('е', 'e')
         
         # 1. Ищем точное совпадение
         for value, label_text, label_normalized, _ in checkbox_candidates:
             if answer_normalized == label_normalized:
+                print(f"    [DEBUG] Найдено точное совпадение!")
                 best_match = value
                 break
         
@@ -2099,18 +2419,58 @@ def find_checkbox_matches(answer_parts, checkboxes):
                         if label_normalized.startswith(answer_normalized) or \
                            label_normalized.endswith(answer_normalized) or \
                            f' {answer_normalized} ' in f' {label_normalized} ':
+                            print(f"    [DEBUG] Найдено совпадение: ответ содержится в варианте")
                             best_match = value
                             break
         
-        # 3. Если не нашли вариант с полным ответом, ищем частичное совпадение (только если >= 90%)
+        # 3. Если не нашли вариант с полным ответом, ищем частичное совпадение (>= 70%)
         if not best_match:
             for value, label_text, label_normalized, label_len in checkbox_candidates:
                 if len(answer_normalized) >= len(label_normalized):
                     if label_normalized in answer_normalized:
                         match_ratio = len(label_normalized) / len(answer_normalized)
-                        if match_ratio >= 0.9 and answer_normalized.startswith(label_normalized):
+                        if match_ratio >= 0.7 and answer_normalized.startswith(label_normalized):
+                            print(f"    [DEBUG] Найдено частичное совпадение (ratio: {match_ratio:.2%})")
                             best_match = value
                             break
+                elif len(label_normalized) >= len(answer_normalized):
+                    # Обратный случай - вариант длиннее ответа
+                    if answer_normalized in label_normalized:
+                        match_ratio = len(answer_normalized) / len(label_normalized)
+                        if match_ratio >= 0.7 and label_normalized.startswith(answer_normalized):
+                            print(f"    [DEBUG] Найдено частичное совпадение (обратное, ratio: {match_ratio:.2%})")
+                            best_match = value
+                            break
+        
+        # 4. Используем гибкое сравнение с заменой похожих символов
+        if not best_match:
+            label_normalized_flexible_map = {}
+            for value, label_text, label_normalized, _ in checkbox_candidates:
+                label_normalized_flexible = label_normalized.replace('і', 'i').replace('е', 'e')
+                label_normalized_flexible_map[value] = label_normalized_flexible
+                
+                # Проверяем точное совпадение после замены символов
+                if answer_normalized_flexible == label_normalized_flexible:
+                    print(f"    [DEBUG] Найдено совпадение после замены похожих символов")
+                    best_match = value
+                    break
+        
+        # 5. Используем SequenceMatcher для более гибкого сравнения
+        if not best_match:
+            from difflib import SequenceMatcher
+            best_similarity = 0.7
+            for value, label_text, label_normalized, _ in checkbox_candidates:
+                # Сначала пробуем обычное сравнение
+                similarity = SequenceMatcher(None, answer_normalized, label_normalized).ratio()
+                # Затем пробуем с заменой символов
+                label_normalized_flexible = label_normalized.replace('і', 'i').replace('е', 'e')
+                similarity_flexible = SequenceMatcher(None, answer_normalized_flexible, label_normalized_flexible).ratio()
+                similarity = max(similarity, similarity_flexible)
+                
+                if similarity > best_similarity:
+                    best_similarity = similarity
+                    best_match = value
+                    print(f"    [DEBUG] Найдено совпадение через SequenceMatcher (similarity: {similarity:.2%})")
         
         if best_match:
             if best_match not in selected_values:
@@ -2118,8 +2478,13 @@ def find_checkbox_matches(answer_parts, checkboxes):
                 # Находим текст для вывода
                 for value, label_text, _, _ in checkbox_candidates:
                     if value == best_match:
-                        print(f"    Найден чекбокс для '{answer_part[:50]}...': '{label_text[:50]}...' (value: {best_match})")
+                        print(f"    ✓ Найден чекбокс для '{answer_part[:50]}...': '{label_text[:50]}...' (value: {best_match})")
                         break
+        else:
+            print(f"    [DEBUG] Не найдено совпадение для: '{answer_part}'")
+            print(f"    [DEBUG] Доступные варианты:")
+            for value, label_text, label_normalized, _ in checkbox_candidates[:3]:
+                print(f"      - value={value}: '{label_text[:60]}...' (нормализованный: '{label_normalized[:60]}...')")
     
     return selected_values
 
@@ -3308,14 +3673,22 @@ def main():
     print("ВЫБОР МОДУЛЯ")
     print("=" * 50)
     print("Выберите модуль для выполнения:")
+    print("  1 - Модуль 1 (курс 770, файл test1.xlsx)")
     print("  2 - Модуль 2 (курс 771, файл test.xlsx)")
     print("  3 - Модуль 3 (курс 772, файл test2.xlsx)")
     print("=" * 50)
     
     while True:
         try:
-            choice = input("\n>>> Введите номер модуля (2 или 3): ").strip()
-            if choice == "2":
+            choice = input("\n>>> Введите номер модуля (1, 2 или 3): ").strip()
+            if choice == "1":
+                selected_module = 1
+                initial_course_url = MAIN_PAGE_URL_1
+                initial_course_id = "770"
+                initial_excel_file = "test1.xlsx"
+                print(f"\n✓ Выбран модуль 1 (курс 770)")
+                break
+            elif choice == "2":
                 selected_module = 2
                 initial_course_url = MAIN_PAGE_URL
                 initial_course_id = "771"
@@ -3330,7 +3703,7 @@ def main():
                 print(f"\n✓ Выбран модуль 3 (курс 772)")
                 break
             else:
-                print("  ⚠ Неверный выбор! Введите 2 или 3")
+                print("  ⚠ Неверный выбор! Введите 1, 2 или 3")
         except KeyboardInterrupt:
             print("\n\nПрервано пользователем")
             return
@@ -3370,7 +3743,7 @@ def main():
     elif "login" in current_url.lower() or "user/login" in current_url.lower():
         print("⚠ Обнаружена страница входа")
         needs_login = True
-    elif MAIN_PAGE_URL in current_url or MAIN_PAGE_URL_2 in current_url or "teacher/courses" in current_url:
+    elif MAIN_PAGE_URL_1 in current_url or MAIN_PAGE_URL in current_url or MAIN_PAGE_URL_2 in current_url or "teacher/courses" in current_url:
         print("✓ Уже залогинены! Перешли на целевую страницу.")
         needs_login = False
     else:
@@ -3393,7 +3766,7 @@ def main():
         current_url = driver.current_url
         print(f"\nТекущий URL после входа: {current_url}")
         
-        if MAIN_PAGE_URL in current_url or MAIN_PAGE_URL_2 in current_url or "teacher/courses" in current_url:
+        if MAIN_PAGE_URL_1 in current_url or MAIN_PAGE_URL in current_url or MAIN_PAGE_URL_2 in current_url or "teacher/courses" in current_url:
             print("✓ Отлично! Вы залогинены и на нужной странице.")
         else:
             print(f"⚠ Текущий URL: {current_url}")
@@ -3402,7 +3775,7 @@ def main():
             time.sleep(3)
             
             final_url = driver.current_url
-            if MAIN_PAGE_URL in final_url or MAIN_PAGE_URL_2 in final_url or "teacher/courses" in final_url:
+            if MAIN_PAGE_URL_1 in final_url or MAIN_PAGE_URL in final_url or MAIN_PAGE_URL_2 in final_url or "teacher/courses" in final_url:
                 print("✓ Перешли на целевую страницу!")
             else:
                 print(f"⚠ Не удалось перейти. Текущий URL: {final_url}")
@@ -3415,7 +3788,7 @@ def main():
     final_url = driver.current_url
     print(f"\n{'='*50}")
     print(f"ФИНАЛЬНЫЙ URL: {final_url}")
-    if MAIN_PAGE_URL in final_url or MAIN_PAGE_URL_2 in final_url or "teacher/courses" in final_url:
+    if MAIN_PAGE_URL_1 in final_url or MAIN_PAGE_URL in final_url or MAIN_PAGE_URL_2 in final_url or "teacher/courses" in final_url:
         print("✓ Сайт открыт и вы залогинены!")
     else:
         print(f"⚠ Текущий URL: {final_url}")
@@ -3459,20 +3832,27 @@ def main():
         
         return None
     
-    test1_path = check_excel_file("test.xlsx")
-    test2_path = check_excel_file("test2.xlsx")
+    test1_path = check_excel_file("test1.xlsx")
+    test2_path = check_excel_file("test.xlsx")
+    test3_path = check_excel_file("test2.xlsx")
     
     if not test1_path:
+        print(f"  ⚠ ВНИМАНИЕ: Файл test1.xlsx не найден!")
+        print(f"  Убедитесь, что файл находится в той же папке, что и программа")
+    else:
+        print(f"  ✓ Файл test1.xlsx найден: {test1_path}")
+    
+    if not test2_path:
         print(f"  ⚠ ВНИМАНИЕ: Файл test.xlsx не найден!")
         print(f"  Убедитесь, что файл находится в той же папке, что и программа")
     else:
-        print(f"  ✓ Файл test.xlsx найден: {test1_path}")
+        print(f"  ✓ Файл test.xlsx найден: {test2_path}")
     
-    if not test2_path:
+    if not test3_path:
         print(f"  ⚠ ВНИМАНИЕ: Файл test2.xlsx не найден!")
         print(f"  Убедитесь, что файл находится в той же папке, что и программа")
     else:
-        print(f"  ✓ Файл test2.xlsx найден: {test2_path}")
+        print(f"  ✓ Файл test2.xlsx найден: {test3_path}")
     
     print("=" * 50 + "\n")
     
@@ -3495,10 +3875,26 @@ def main():
                 print("⚠ Не удалось найти список заданий!")
                 print(f"Текущий URL: {driver.current_url}")
                 
-                # Если мы на курсе 771 и не нашли список, возможно модуль 2 завершен
-                if current_course_id == "771":
+                # Проверяем завершение модулей и переход на следующий
+                if current_course_id == "770":
+                    print("\n" + "=" * 50)
+                    print("Модуль 1 (курс 770) завершен!")
+                    print("=" * 50)
+                    print("Нажмите Enter для перехода на следующий модуль (курс 771)...")
+                    print("=" * 50)
+                    input("\n>>> Нажмите Enter для продолжения...")
+                    current_course_url = MAIN_PAGE_URL
+                    current_course_id = "771"
+                    current_excel_file = "test.xlsx"
+                    selected_module = 2  # Обновляем выбранный модуль
+                    print("Переходим на курс 771...")
+                    driver.get(current_course_url)
+                    time.sleep(3)
+                    continue
+                elif current_course_id == "771":
                     print("\n" + "=" * 50)
                     print("Модуль 2 (курс 771) завершен!")
+                    print("=" * 50)
                     print("=" * 50)
                     print("Нажмите Enter для перехода на следующий модуль (курс 772)...")
                     print("=" * 50)
@@ -3512,6 +3908,11 @@ def main():
                     time.sleep(3)
                     continue
                 else:
+                    # Модуль 3 завершен
+                    print("\n" + "=" * 50)
+                    print("Модуль 3 (курс 772) завершен!")
+                    print("Все модули обработаны!")
+                    print("=" * 50)
                     break
             
             # Извлекаем все задания на текущей странице
@@ -3563,9 +3964,24 @@ def main():
                     print("⚠ На этом задании нет видео - модуль завершен!")
                     print("=" * 50)
                     
-                    # Если мы на курсе 771 (модуль 2), переходим на курс 772 (модуль 3)
-                    if current_course_id == "771":
+                    # Проверяем завершение модулей и переход на следующий
+                    if current_course_id == "770":
+                        print("Модуль 1 (курс 770) завершен!")
+                        print("=" * 50)
+                        print("Нажмите Enter для перехода на следующий модуль (курс 771)...")
+                        print("=" * 50)
+                        input("\n>>> Нажмите Enter для продолжения...")
+                        current_course_url = MAIN_PAGE_URL
+                        current_course_id = "771"
+                        current_excel_file = "test.xlsx"
+                        selected_module = 2  # Обновляем выбранный модуль
+                        print("Переходим на курс 771...")
+                        driver.get(current_course_url)
+                        time.sleep(3)
+                        continue
+                    elif current_course_id == "771":
                         print("Модуль 2 (курс 771) завершен!")
+                        print("=" * 50)
                         print("=" * 50)
                         print("Нажмите Enter для перехода на следующий модуль (курс 772)...")
                         print("=" * 50)
@@ -3577,7 +3993,6 @@ def main():
                         print("Переходим на курс 772...")
                         driver.get(current_course_url)
                         time.sleep(3)
-                        # Продолжаем цикл для обработки заданий нового курса
                         continue
                     else:
                         # Мы уже на курсе 772, завершаем работу
@@ -3653,10 +4068,26 @@ def main():
             else:
                 print("Кнопка 'Показать ещё' не найдена или отключена.")
                 
-                # Если мы на курсе 771, проверяем, завершен ли модуль 2
-                if current_course_id == "771":
+                # Проверяем завершение модулей и переход на следующий
+                if current_course_id == "770":
+                    print("\n" + "=" * 50)
+                    print("Модуль 1 (курс 770) завершен!")
+                    print("=" * 50)
+                    print("Нажмите Enter для перехода на следующий модуль (курс 771)...")
+                    print("=" * 50)
+                    input("\n>>> Нажмите Enter для продолжения...")
+                    current_course_url = MAIN_PAGE_URL
+                    current_course_id = "771"
+                    current_excel_file = "test.xlsx"
+                    selected_module = 2  # Обновляем выбранный модуль
+                    print("Переходим на курс 771...")
+                    driver.get(current_course_url)
+                    time.sleep(3)
+                    continue
+                elif current_course_id == "771":
                     print("\n" + "=" * 50)
                     print("Модуль 2 (курс 771) завершен!")
+                    print("=" * 50)
                     print("=" * 50)
                     print("Нажмите Enter для перехода на следующий модуль (курс 772)...")
                     print("=" * 50)
@@ -3668,7 +4099,6 @@ def main():
                     print("Переходим на курс 772...")
                     driver.get(current_course_url)
                     time.sleep(3)
-                    # Продолжаем цикл для обработки заданий нового курса
                     continue
                 elif current_course_id == "772":
                     # Модуль 3 завершен

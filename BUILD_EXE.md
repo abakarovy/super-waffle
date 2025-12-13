@@ -26,7 +26,7 @@ python -m PyInstaller --onefile --windowed --name="CourseAutomation" help.py
 
 ### Вариант 3: С включением Excel файлов (рекомендуется)
 ```bash
-python -m PyInstaller --onefile --name="CourseAutomation" --add-data "test.xlsx;." --add-data "test2.xlsx;." help.py
+python -m PyInstaller --onefile --name="CourseAutomation" --add-data "test1.xlsx;." --add-data "test.xlsx;." --add-data "test2.xlsx;." help.py
 ```
 
 ## Шаг 3: Найти созданный файл
@@ -41,10 +41,10 @@ python -m PyInstaller --onefile --name="CourseAutomation" --add-data "test.xlsx;
    - ChromeDriver будет автоматически скачан в папку пользователя при первом запуске exe
 
 2. **Excel файлы**: 
-   - Если используете вариант 3 или build_exe.bat, оба Excel файла (test.xlsx и test2.xlsx) будут включены в exe
+   - Если используете вариант 3 или build_exe.bat, все три Excel файла (test1.xlsx, test.xlsx и test2.xlsx) будут включены в exe
    - Файлы будут распакованы во временную папку при запуске exe
-   - Убедитесь, что оба файла находятся в папке проекта перед сборкой
-   - Программа автоматически использует test.xlsx для модуля 2 (курс 771) и test2.xlsx для следующего курса (курс 772)
+   - Убедитесь, что все три файла находятся в папке проекта перед сборкой
+   - Программа автоматически использует test1.xlsx для модуля 1 (курс 770), test.xlsx для модуля 2 (курс 771) и test2.xlsx для модуля 3 (курс 772)
 
 3. **Размер файла**: 
    - .exe файл будет довольно большим (50-100 МБ), так как включает Python и все библиотеки
@@ -67,13 +67,13 @@ python -m PyInstaller CourseAutomation.spec
 
 ### Вариант 3: Ручная команда
 ```bash
-python -m PyInstaller --onefile --name="CourseAutomation" --add-data "test.xlsx;." --add-data "test2.xlsx;." help.py
+python -m PyInstaller --onefile --name="CourseAutomation" --add-data "test1.xlsx;." --add-data "test.xlsx;." --add-data "test2.xlsx;." help.py
 ```
 
 ## После создания exe:
 
 1. Найдите файл `dist/CourseAutomation.exe`
 2. Скопируйте его в нужную папку
-3. Если не использовали --add-data, убедитесь, что файлы `test.xlsx` и `test2.xlsx` находятся в той же папке
+3. Если не использовали --add-data, убедитесь, что файлы `test1.xlsx`, `test.xlsx` и `test2.xlsx` находятся в той же папке
 4. Запустите exe файл - он должен работать без установленного Python!
 
