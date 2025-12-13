@@ -33,7 +33,6 @@ def test_ai():
     # Проверяем настройки
     print(f"\n📋 Конфигурация:")
     print(f"   AI включен: {config.get('ai_enabled')}")
-    print(f"   Провайдер: {config.get('ai_provider')}")
     print(f"   Модель: {config.get('ai_model')}")
     print(f"   API ключ: {'✓ Установлен' if config.get('ai_api_key') else '✗ Не установлен'}")
     
@@ -52,7 +51,6 @@ def test_ai():
     try:
         ai = AIHelper(
             api_key=config.get('ai_api_key'),
-            provider=config.get('ai_provider'),
             model=config.get('ai_model')
         )
     except Exception as e:
@@ -193,7 +191,6 @@ def test_ai():
     print("="*60)
     print("\n✅ Все тесты пройдены успешно!")
     print(f"\n📊 Статистика:")
-    print(f"   Провайдер: {config.get('ai_provider')}")
     print(f"   Модель: {config.get('ai_model')}")
     print(f"   Тестов пройдено: 4/4")
     
