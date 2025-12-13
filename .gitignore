@@ -1,2 +1,27 @@
 build
 dist
+
+# Конфигурация с API ключами
+config.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Виртуальные окружения
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Тестовые файлы
+test*.xlsx
+!test.xlsx

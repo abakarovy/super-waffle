@@ -1,0 +1,12 @@
+{
+  "ai_enabled": false,
+  "ai_api_key": "ВСТАВЬТЕ_ВАШ_КЛЮЧ_OPENROUTER_СЮДА",
+  "ai_model": "deepseek/deepseek-chat",
+  "use_ai_for_tests": true,
+  "confidence_threshold": 0.7,
+  "fallback_to_manual": true,
+  
+  "_инструкция": "1. Зарегистрируйтесь на https://openrouter.ai/ 2. Пополните баланс ($5) 3. Создайте API ключ на https://openrouter.ai/keys 4. Вставьте ключ выше 5. Измените ai_enabled на true",
+  "_доступные_модели": "deepseek/deepseek-chat ($0.14/1M токенов - рекомендуется), anthropic/claude-3-haiku ($0.25/1M), meta-llama/llama-3-8b-instruct:free (бесплатно)",
+  "_стоимость": "DeepSeek: ~$0.01 за 100 вопросов, $5 хватит на ~50,000 вопросов"
+}
