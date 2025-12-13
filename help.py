@@ -348,12 +348,15 @@ def detect_task_type(driver):
         except:
             pass
         
-        # 2. Radio - одиночный выбор
+        # 2. Radio - одиночный выбор (только если нет checkbox)
         try:
             radios = task_form.find_elements(By.CSS_SELECTOR, "input[type='radio']")
             if radios:
-                print("  Тип задачи: RADIO (одиночный выбор)")
-                return "radio"
+                # Проверяем, нет ли checkbox - если есть, приоритет у checkbox
+                checkboxes = task_form.find_elements(By.CSS_SELECTOR, "input[type='checkbox']")
+                if not checkboxes:
+                    print("  Тип задачи: RADIO (одиночный выбор)")
+                    return "radio"
         except:
             pass
         
@@ -1993,16 +1996,24 @@ def find_best_radio_match(answer_text, radios):
                     print(f"    [DEBUG] Найдено совпадение по началу строки (первые {check_len} символов)")
                     return radio, value
     
-    # 1.5. Ищем совпадение, где текст на странице может быть обрезан
-    # Если текст на странице короче, но ответ начинается с текста на странице - это совпадение
+    # 1.5. Ищем совпадение, где текст в Excel может быть обрезан
+    # Если ответ из Excel короче, но вариант на странице начинается с ответа - это совпадение
     for radio, value, label_text, label_normalized, _ in candidates:
-        if len(label_normalized) < len(answer_normalized):
+        if len(answer_normalized) < len(label_normalized):
+            # Ответ из Excel может быть обрезан
+            if label_normalized.startswith(answer_normalized):
+                # Проверяем, что совпадение достаточно длинное (не менее 70% от варианта)
+                match_ratio = len(answer_normalized) / len(label_normalized)
+                if match_ratio >= 0.7:
+                    print(f"    [DEBUG] Найдено совпадение: ответ из Excel обрезан, но вариант начинается с ответа")
+                    return radio, value
+        elif len(label_normalized) < len(answer_normalized):
             # Текст на странице может быть обрезан
             if answer_normalized.startswith(label_normalized):
-                # Проверяем, что совпадение достаточно длинное (не менее 80% от ответа)
+                # Проверяем, что совпадение достаточно длинное (не менее 70% от ответа)
                 match_ratio = len(label_normalized) / len(answer_normalized)
-                if match_ratio >= 0.8:
-                    # Если ответ начинается с текста на странице, это совпадение
+                if match_ratio >= 0.7:
+                    print(f"    [DEBUG] Найдено совпадение: вариант на странице обрезан, но ответ начинается с варианта")
                     return radio, value
     
     # 2. Ищем вариант, где полный ответ содержится в варианте (вариант длиннее или равен)
@@ -2569,6 +2580,22 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
             # Определяем тип задачи на странице
             print("\n  Определяем тип задачи на странице...")
             task_type = detect_task_type(driver)
+            
+            # Проверяем ответ из Excel - если это список/массив, это должна быть checkbox задача
+            # Это важно, так как некоторые страницы могут иметь и radio и checkbox элементы
+            if answer_text and (answer_text.strip().startswith('[') or 
+                               (',' in answer_text and ('"' in answer_text or "'" in answer_text)) or
+                               ';' in answer_text):
+                # Ответ выглядит как список - проверяем, есть ли checkbox на странице
+                try:
+                    task_form = get_task_form(driver)
+                    checkboxes = task_form.find_elements(By.CSS_SELECTOR, "input[type='checkbox']")
+                    if checkboxes:
+                        print("  ⚠ Ответ из Excel - это список, но задача определена как другой тип")
+                        print("  Переопределяем тип задачи на CHECKBOX")
+                        task_type = "checkbox"
+                except:
+                    pass
             
             if task_type == "unknown":
                 print("  ⚠ Не удалось определить тип задачи")
@@ -3274,6 +3301,40 @@ def main():
     print("=" * 50)
     print()
     
+    # Выбор модуля для выполнения
+    print("\n" + "=" * 50)
+    print("ВЫБОР МОДУЛЯ")
+    print("=" * 50)
+    print("Выберите модуль для выполнения:")
+    print("  2 - Модуль 2 (курс 771, файл test.xlsx)")
+    print("  3 - Модуль 3 (курс 772, файл test2.xlsx)")
+    print("=" * 50)
+    
+    while True:
+        try:
+            choice = input("\n>>> Введите номер модуля (2 или 3): ").strip()
+            if choice == "2":
+                selected_module = 2
+                initial_course_url = MAIN_PAGE_URL
+                initial_course_id = "771"
+                initial_excel_file = "test.xlsx"
+                print(f"\n✓ Выбран модуль 2 (курс 771)")
+                break
+            elif choice == "3":
+                selected_module = 3
+                initial_course_url = MAIN_PAGE_URL_2
+                initial_course_id = "772"
+                initial_excel_file = "test2.xlsx"
+                print(f"\n✓ Выбран модуль 3 (курс 772)")
+                break
+            else:
+                print("  ⚠ Неверный выбор! Введите 2 или 3")
+        except KeyboardInterrupt:
+            print("\n\nПрервано пользователем")
+            return
+        except Exception as e:
+            print(f"  ⚠ Ошибка: {e}")
+    
     driver = None
     try:
         driver = setup_driver()
@@ -3289,9 +3350,9 @@ def main():
         print("ОШИБКА: driver is None!")
         return
     
-    # Открываем главную страницу (начинаем с модуля 2 - курс 771)
-    print(f"\nОткрываем главную страницу модуля 2: {MAIN_PAGE_URL}")
-    driver.get(MAIN_PAGE_URL)
+    # Открываем главную страницу выбранного модуля
+    print(f"\nОткрываем главную страницу модуля {selected_module}: {initial_course_url}")
+    driver.get(initial_course_url)
     time.sleep(3)
     
     # Проверяем, нужен ли вход
@@ -3321,7 +3382,7 @@ def main():
         print("=" * 50)
         print("Браузер открыт. Пожалуйста, войдите в систему вручную.")
         print("После успешного входа:")
-        print("1. Убедитесь, что вы на странице: https://kb.cifrium.ru/teacher/courses/771")
+        print(f"1. Убедитесь, что вы на странице: {initial_course_url}")
         print("2. Нажмите Enter в этом окне")
         print("=" * 50)
         input("\n>>> Нажмите Enter после того, как войдете в систему...")
@@ -3335,7 +3396,7 @@ def main():
         else:
             print(f"⚠ Текущий URL: {current_url}")
             print("Переходим на целевую страницу...")
-            driver.get(MAIN_PAGE_URL)
+            driver.get(initial_course_url)
             time.sleep(3)
             
             final_url = driver.current_url
@@ -3361,10 +3422,10 @@ def main():
     # Продолжаем работу со скриптом
     interrupted = False
     
-    # Определяем текущий курс и соответствующий Excel файл
-    current_course_url = MAIN_PAGE_URL
-    current_course_id = "771"
-    current_excel_file = "test.xlsx"
+    # Определяем текущий курс и соответствующий Excel файл на основе выбранного модуля
+    current_course_url = initial_course_url
+    current_course_id = initial_course_id
+    current_excel_file = initial_excel_file
     
     # Проверяем наличие Excel файлов перед началом работы
     print("\n" + "=" * 50)
@@ -3443,6 +3504,7 @@ def main():
                     current_course_url = MAIN_PAGE_URL_2
                     current_course_id = "772"
                     current_excel_file = "test2.xlsx"
+                    selected_module = 3  # Обновляем выбранный модуль
                     print("Переходим на курс 772...")
                     driver.get(current_course_url)
                     time.sleep(3)
@@ -3499,7 +3561,7 @@ def main():
                     print("⚠ На этом задании нет видео - модуль завершен!")
                     print("=" * 50)
                     
-                    # Если мы на курсе 771 (модуль 2), переходим на курс 772
+                    # Если мы на курсе 771 (модуль 2), переходим на курс 772 (модуль 3)
                     if current_course_id == "771":
                         print("Модуль 2 (курс 771) завершен!")
                         print("=" * 50)
@@ -3509,6 +3571,7 @@ def main():
                         current_course_url = MAIN_PAGE_URL_2
                         current_course_id = "772"
                         current_excel_file = "test2.xlsx"
+                        selected_module = 3  # Обновляем выбранный модуль
                         print("Переходим на курс 772...")
                         driver.get(current_course_url)
                         time.sleep(3)
@@ -3516,7 +3579,7 @@ def main():
                         continue
                     else:
                         # Мы уже на курсе 772, завершаем работу
-                        print("Курс 772 завершен!")
+                        print("Модуль 3 (курс 772) завершен!")
                         print("Все модули обработаны!")
                         print("=" * 50)
                         break
@@ -3599,11 +3662,19 @@ def main():
                     current_course_url = MAIN_PAGE_URL_2
                     current_course_id = "772"
                     current_excel_file = "test2.xlsx"
+                    selected_module = 3  # Обновляем выбранный модуль
                     print("Переходим на курс 772...")
                     driver.get(current_course_url)
                     time.sleep(3)
                     # Продолжаем цикл для обработки заданий нового курса
                     continue
+                elif current_course_id == "772":
+                    # Модуль 3 завершен
+                    print("\n" + "=" * 50)
+                    print("Модуль 3 (курс 772) завершен!")
+                    print("Все модули обработаны!")
+                    print("=" * 50)
+                    break
                 else:
                     print("Все задания обработаны!")
                     break
