@@ -19,10 +19,12 @@ echo ""
 echo "Создаем .exe файл..."
 echo ""
 
-# Создаем exe файл с включением Excel файла
-pyinstaller --onefile \
+# Создаем exe файл с включением Excel файлов
+# Используем python -m PyInstaller вместо pyinstaller для надежности
+python -m PyInstaller --onefile \
     --name="CourseAutomation" \
     --add-data "test.xlsx:." \
+    --add-data "test2.xlsx:." \
     --hidden-import=pandas \
     --hidden-import=openpyxl \
     --hidden-import=selenium \

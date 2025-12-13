@@ -5,8 +5,10 @@
 Откройте командную строку или PowerShell в папке проекта и выполните:
 
 ```bash
-pip install pyinstaller
+pip install -U pyinstaller
 ```
+
+**Примечание:** Если команда `pyinstaller` не работает после установки, используйте `python -m PyInstaller` вместо `pyinstaller` во всех командах ниже.
 
 ## Шаг 2: Создание .exe файла
 
@@ -14,17 +16,17 @@ pip install pyinstaller
 
 ### Вариант 1: Простая команда (рекомендуется)
 ```bash
-pyinstaller --onefile --name="CourseAutomation" --icon=NONE help.py
+python -m PyInstaller --onefile --name="CourseAutomation" --icon=NONE help.py
 ```
 
 ### Вариант 2: С дополнительными опциями (скрытая консоль)
 ```bash
-pyinstaller --onefile --windowed --name="CourseAutomation" help.py
+python -m PyInstaller --onefile --windowed --name="CourseAutomation" help.py
 ```
 
-### Вариант 3: С включением Excel файла
+### Вариант 3: С включением Excel файлов (рекомендуется)
 ```bash
-pyinstaller --onefile --name="CourseAutomation" --add-data "test.xlsx;." help.py
+python -m PyInstaller --onefile --name="CourseAutomation" --add-data "test.xlsx;." --add-data "test2.xlsx;." help.py
 ```
 
 ## Шаг 3: Найти созданный файл
@@ -38,10 +40,11 @@ pyinstaller --onefile --name="CourseAutomation" --add-data "test.xlsx;." help.py
    - Если возникают проблемы, убедитесь, что Chrome браузер установлен на системе
    - ChromeDriver будет автоматически скачан в папку пользователя при первом запуске exe
 
-2. **Excel файл**: 
-   - Если используете вариант 3 или build_exe.bat, Excel файл будет включен в exe
-   - Файл будет распакован во временную папку при запуске exe
-   - Убедитесь, что путь к файлу в коде правильный
+2. **Excel файлы**: 
+   - Если используете вариант 3 или build_exe.bat, оба Excel файла (test.xlsx и test2.xlsx) будут включены в exe
+   - Файлы будут распакованы во временную папку при запуске exe
+   - Убедитесь, что оба файла находятся в папке проекта перед сборкой
+   - Программа автоматически использует test.xlsx для модуля 2 (курс 771) и test2.xlsx для следующего курса (курс 772)
 
 3. **Размер файла**: 
    - .exe файл будет довольно большим (50-100 МБ), так как включает Python и все библиотеки
@@ -58,19 +61,19 @@ pyinstaller --onefile --name="CourseAutomation" --add-data "test.xlsx;." help.py
 
 ### Вариант 2: Использовать .spec файл
 ```bash
-pyinstaller CourseAutomation.spec
+python -m PyInstaller CourseAutomation.spec
 ```
 Этот вариант дает больше контроля над процессом сборки.
 
 ### Вариант 3: Ручная команда
 ```bash
-pyinstaller --onefile --name="CourseAutomation" --add-data "test.xlsx;." help.py
+python -m PyInstaller --onefile --name="CourseAutomation" --add-data "test.xlsx;." --add-data "test2.xlsx;." help.py
 ```
 
 ## После создания exe:
 
 1. Найдите файл `dist/CourseAutomation.exe`
 2. Скопируйте его в нужную папку
-3. Убедитесь, что файл `test.xlsx` находится в той же папке (если не использовали --add-data)
+3. Если не использовали --add-data, убедитесь, что файлы `test.xlsx` и `test2.xlsx` находятся в той же папке
 4. Запустите exe файл - он должен работать без установленного Python!
 

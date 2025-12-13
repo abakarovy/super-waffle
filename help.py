@@ -18,7 +18,8 @@ import json
 global_driver = None
 
 # URL главной страницы
-MAIN_PAGE_URL = "https://kb.cifrium.ru/teacher/courses/771"
+MAIN_PAGE_URL = "https://kb.cifrium.ru/teacher/courses/771"  # Модуль 2
+MAIN_PAGE_URL_2 = "https://kb.cifrium.ru/teacher/courses/772"  # Следующий курс
 HOME_URL = "https://kb.cifrium.ru/"
 LOGIN_URL = "https://kb.cifrium.ru/user/login"
 
@@ -69,8 +70,9 @@ def find_lessons_list(driver):
         print(f"Ошибка при поиске списка заданий: {e}")
         return None
 
-def get_task_links(driver, lessons_list):
-    """Извлекает все ссылки на задания из списка"""
+def get_task_links(driver, lessons_list, course_id="771"):
+    """Извлекает все ссылки на задания из списка
+    course_id - ID курса (по умолчанию 771)"""
     try:
         # Находим все элементы <a> внутри списка заданий
         task_links = lessons_list.find_elements(By.TAG_NAME, "a")
@@ -78,7 +80,7 @@ def get_task_links(driver, lessons_list):
         links = []
         for link in task_links:
             href = link.get_attribute("href")
-            if href and "/teacher/courses/771/lessons/" in href:
+            if href and f"/teacher/courses/{course_id}/lessons/" in href:
                 # Проверяем, выполнено ли задание
                 is_completed = check_if_completed(link)
                 links.append({
@@ -1571,7 +1573,7 @@ def submit_task_form(driver):
         
         # Ищем кнопку "Дальше"
         # Если кнопка не найдена - это последний вопрос домашнего задания
-        wait = WebDriverWait(driver, 3)  # Уменьшено время ожидания с 10 до 3 секунд
+        wait = WebDriverWait(driver, 1)  # Уменьшено время ожидания до 1 секунды
         try:
             # Ищем кнопку "Дальше" по нескольким способам
             next_button = None
@@ -1680,15 +1682,23 @@ def submit_task_form(driver):
                     driver.execute_script("arguments[0].click();", next_button)
                     print("  ✓ Нажата кнопка 'Дальше' (через JS)")
                 
-                time.sleep(0.5)  # Уменьшено время ожидания перехода
+                time.sleep(0.3)  # Уменьшено время ожидания перехода
                 return True
             else:
                 # Кнопка "Дальше" не найдена - это последний вопрос домашнего задания
                 print("  ⚠ Кнопка 'Дальше' не найдена - это последний вопрос домашнего задания")
                 print("  Возвращаемся на страницу курса...")
                 
-                # Возвращаемся на страницу курса
-                driver.get(MAIN_PAGE_URL)
+                # Возвращаемся на страницу курса (определяем по текущему URL)
+                current_url = driver.current_url
+                # Извлекаем базовый URL курса из текущего URL
+                match = re.search(r'(https://kb\.cifrium\.ru/teacher/courses/\d+)', current_url)
+                if match:
+                    course_base_url = match.group(1)
+                    driver.get(course_base_url)
+                else:
+                    # Fallback на MAIN_PAGE_URL, если не удалось извлечь
+                    driver.get(MAIN_PAGE_URL)
                 time.sleep(3)  # Увеличиваем время ожидания для обновления статуса заданий
                 print("  ✓ Вернулись на страницу курса")
                 return "homework_completed"  # Специальное значение для обозначения завершения ДЗ
@@ -2396,9 +2406,17 @@ def read_task_data_from_excel(excel_path="test.xlsx"):
         print(f"  Колонки: {list(df.columns)}")
         print(f"  Файл: {full_path}")
         return df
+    except FileNotFoundError as e:
+        print(f"  ⚠ ОШИБКА: Excel файл не найден!")
+        print(f"  Искали файл: {excel_path}")
+        print(f"  Пробовали путь: {full_path if 'full_path' in locals() else excel_path}")
+        print(f"  Убедитесь, что файл {excel_path} находится в той же папке, что и программа")
+        return None
     except Exception as e:
         print(f"  ⚠ Ошибка при чтении Excel файла: {e}")
         print(f"  Пробовали путь: {full_path if 'full_path' in locals() else excel_path}")
+        import traceback
+        traceback.print_exc()
         return None
 
 def process_tasks_from_excel(driver, excel_path="test.xlsx"):
@@ -2556,7 +2574,7 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
                 print("  ⚠ Не удалось определить тип задачи")
                 # Проверяем, может быть задача уже решена и есть кнопка "Дальше"
                 try:
-                    wait = WebDriverWait(driver, 3)
+                    wait = WebDriverWait(driver, 1)  # Уменьшено время ожидания до 1 секунды
                     next_button = wait.until(EC.element_to_be_clickable((
                         By.CSS_SELECTOR,
                         ".styled__ButtonNext-qDZv, a.styled__Root-ebtVmd, a.fox-Anchor.styled__Root-ebtVmd"
@@ -2564,13 +2582,13 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
                     print("  Задача уже решена, нажимаем 'Дальше'...")
                     url_before_next = driver.current_url
                     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", next_button)
-                    time.sleep(0.3)
+                    time.sleep(0.2)  # Уменьшено время ожидания после скролла
                     try:
                         next_button.click()
                     except:
                         driver.execute_script("arguments[0].click();", next_button)
                     print("  ✓ Переход к следующей задаче")
-                    time.sleep(2)
+                    time.sleep(1)  # Уменьшено время ожидания после перехода
                     
                     # Проверяем, действительно ли мы перешли на новую задачу
                     url_after_next = driver.current_url
@@ -3271,8 +3289,8 @@ def main():
         print("ОШИБКА: driver is None!")
         return
     
-    # Открываем главную страницу
-    print(f"\nОткрываем главную страницу: {MAIN_PAGE_URL}")
+    # Открываем главную страницу (начинаем с модуля 2 - курс 771)
+    print(f"\nОткрываем главную страницу модуля 2: {MAIN_PAGE_URL}")
     driver.get(MAIN_PAGE_URL)
     time.sleep(3)
     
@@ -3289,7 +3307,7 @@ def main():
     elif "login" in current_url.lower() or "user/login" in current_url.lower():
         print("⚠ Обнаружена страница входа")
         needs_login = True
-    elif MAIN_PAGE_URL in current_url or "teacher/courses" in current_url:
+    elif MAIN_PAGE_URL in current_url or MAIN_PAGE_URL_2 in current_url or "teacher/courses" in current_url:
         print("✓ Уже залогинены! Перешли на целевую страницу.")
         needs_login = False
     else:
@@ -3312,7 +3330,7 @@ def main():
         current_url = driver.current_url
         print(f"\nТекущий URL после входа: {current_url}")
         
-        if MAIN_PAGE_URL in current_url or "teacher/courses" in current_url:
+        if MAIN_PAGE_URL in current_url or MAIN_PAGE_URL_2 in current_url or "teacher/courses" in current_url:
             print("✓ Отлично! Вы залогинены и на нужной странице.")
         else:
             print(f"⚠ Текущий URL: {current_url}")
@@ -3321,7 +3339,7 @@ def main():
             time.sleep(3)
             
             final_url = driver.current_url
-            if MAIN_PAGE_URL in final_url or "teacher/courses" in final_url:
+            if MAIN_PAGE_URL in final_url or MAIN_PAGE_URL_2 in final_url or "teacher/courses" in final_url:
                 print("✓ Перешли на целевую страницу!")
             else:
                 print(f"⚠ Не удалось перейти. Текущий URL: {final_url}")
@@ -3334,7 +3352,7 @@ def main():
     final_url = driver.current_url
     print(f"\n{'='*50}")
     print(f"ФИНАЛЬНЫЙ URL: {final_url}")
-    if MAIN_PAGE_URL in final_url or "teacher/courses" in final_url:
+    if MAIN_PAGE_URL in final_url or MAIN_PAGE_URL_2 in final_url or "teacher/courses" in final_url:
         print("✓ Сайт открыт и вы залогинены!")
     else:
         print(f"⚠ Текущий URL: {final_url}")
@@ -3342,16 +3360,69 @@ def main():
     
     # Продолжаем работу со скриптом
     interrupted = False
+    
+    # Определяем текущий курс и соответствующий Excel файл
+    current_course_url = MAIN_PAGE_URL
+    current_course_id = "771"
+    current_excel_file = "test.xlsx"
+    
+    # Проверяем наличие Excel файлов перед началом работы
+    print("\n" + "=" * 50)
+    print("Проверка наличия Excel файлов...")
+    print("=" * 50)
+    
+    # Функция для проверки файла
+    def check_excel_file(filename):
+        if getattr(sys, 'frozen', False):
+            # Для exe - проверяем в директории exe
+            exe_dir = os.path.dirname(sys.executable)
+            file_path = os.path.join(exe_dir, filename)
+            if os.path.exists(file_path):
+                return file_path
+            # Также проверяем во временной папке PyInstaller
+            try:
+                base_path = sys._MEIPASS
+                file_path = os.path.join(base_path, filename)
+                if os.path.exists(file_path):
+                    return file_path
+            except:
+                pass
+        else:
+            # Для скрипта - проверяем в директории скрипта
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            file_path = os.path.join(script_dir, filename)
+            if os.path.exists(file_path):
+                return file_path
+        
+        return None
+    
+    test1_path = check_excel_file("test.xlsx")
+    test2_path = check_excel_file("test2.xlsx")
+    
+    if not test1_path:
+        print(f"  ⚠ ВНИМАНИЕ: Файл test.xlsx не найден!")
+        print(f"  Убедитесь, что файл находится в той же папке, что и программа")
+    else:
+        print(f"  ✓ Файл test.xlsx найден: {test1_path}")
+    
+    if not test2_path:
+        print(f"  ⚠ ВНИМАНИЕ: Файл test2.xlsx не найден!")
+        print(f"  Убедитесь, что файл находится в той же папке, что и программа")
+    else:
+        print(f"  ✓ Файл test2.xlsx найден: {test2_path}")
+    
+    print("=" * 50 + "\n")
+    
     try:
         print("Ищем список заданий...")
         sys.stdout.flush()
         
         # Основной цикл обработки заданий
         while True:
-            # Убеждаемся, что мы на главной странице
-            if "teacher/courses/771" not in driver.current_url:
-                print("Переходим на главную страницу...")
-                driver.get(MAIN_PAGE_URL)
+            # Убеждаемся, что мы на главной странице текущего курса
+            if f"teacher/courses/{current_course_id}" not in driver.current_url:
+                print(f"Переходим на главную страницу курса {current_course_id}...")
+                driver.get(current_course_url)
                 time.sleep(2)
             
             # Находим список заданий
@@ -3360,11 +3431,28 @@ def main():
             if not lessons_list:
                 print("⚠ Не удалось найти список заданий!")
                 print(f"Текущий URL: {driver.current_url}")
-                break
+                
+                # Если мы на курсе 771 и не нашли список, возможно модуль 2 завершен
+                if current_course_id == "771":
+                    print("\n" + "=" * 50)
+                    print("Модуль 2 (курс 771) завершен!")
+                    print("=" * 50)
+                    print("Нажмите Enter для перехода на следующий модуль (курс 772)...")
+                    print("=" * 50)
+                    input("\n>>> Нажмите Enter для продолжения...")
+                    current_course_url = MAIN_PAGE_URL_2
+                    current_course_id = "772"
+                    current_excel_file = "test2.xlsx"
+                    print("Переходим на курс 772...")
+                    driver.get(current_course_url)
+                    time.sleep(3)
+                    continue
+                else:
+                    break
             
             # Извлекаем все задания на текущей странице
             print("Извлекаем задания на текущей странице...")
-            all_task_links = get_task_links(driver, lessons_list)
+            all_task_links = get_task_links(driver, lessons_list, current_course_id)
             
             # Фильтруем только невыполненные задания
             incomplete_tasks = [task for task in all_task_links if not task["completed"]]
@@ -3404,16 +3492,34 @@ def main():
                 print("  Проверяем наличие Kinescope видео...")
                 video_result = handle_kinescope_video(driver)
                 
-                # Если видео не найдено, останавливаем процесс
+                # Если видео не найдено, это означает, что модуль завершен
+                # (последнее задание - тест без видео)
                 if video_result is False:
                     print("\n" + "=" * 50)
-                    print("⚠ ОСТАНОВКА: На этом задании нет видео")
+                    print("⚠ На этом задании нет видео - модуль завершен!")
                     print("=" * 50)
-                    print("Процесс приостановлен. Браузер остается открытым.")
-                    print("Нажмите Enter чтобы продолжить, или закройте браузер вручную.")
-                    print("=" * 50)
-                    input("\n>>> Нажмите Enter для продолжения...")
-                    # После ввода продолжаем
+                    
+                    # Если мы на курсе 771 (модуль 2), переходим на курс 772
+                    if current_course_id == "771":
+                        print("Модуль 2 (курс 771) завершен!")
+                        print("=" * 50)
+                        print("Нажмите Enter для перехода на следующий модуль (курс 772)...")
+                        print("=" * 50)
+                        input("\n>>> Нажмите Enter для продолжения...")
+                        current_course_url = MAIN_PAGE_URL_2
+                        current_course_id = "772"
+                        current_excel_file = "test2.xlsx"
+                        print("Переходим на курс 772...")
+                        driver.get(current_course_url)
+                        time.sleep(3)
+                        # Продолжаем цикл для обработки заданий нового курса
+                        continue
+                    else:
+                        # Мы уже на курсе 772, завершаем работу
+                        print("Курс 772 завершен!")
+                        print("Все модули обработаны!")
+                        print("=" * 50)
+                        break
                 elif video_result is True:
                     # Видео обработано успешно, переходим к кнопке задач
                     print("  Видео обработано, ищем кнопку задач...")
@@ -3426,15 +3532,15 @@ def main():
                         
                         # Обрабатываем все задачи текущего homework из Excel
                         print("\n" + "=" * 50)
-                        print("Обрабатываем задачи из Excel...")
+                        print(f"Обрабатываем задачи из Excel ({current_excel_file})...")
                         print("=" * 50)
-                        result = process_tasks_from_excel(driver, "test.xlsx")
+                        result = process_tasks_from_excel(driver, current_excel_file)
                         
                         if result == "homework_completed":
                             # Домашнее задание завершено, вернулись на страницу курса
                             print("\n  Домашнее задание завершено, продолжаем с другими заданиями")
                             # Полностью перезагружаем страницу, чтобы обновить статус заданий
-                            driver.get(MAIN_PAGE_URL)
+                            driver.get(current_course_url)
                             time.sleep(3)  # Ждем обновления страницы
                             
                             # Принудительно обновляем страницу для обновления статуса заданий
@@ -3451,13 +3557,13 @@ def main():
                     else:
                         # Возвращаемся на главную страницу для следующей проверки
                         print("  Возвращаемся на главную страницу...")
-                        driver.get(MAIN_PAGE_URL)
+                        driver.get(current_course_url)
                         time.sleep(2)
                         continue
                 
                 # Если видео не было обработано (None или другая ошибка), возвращаемся на главную
                 print("  Возвращаемся на главную страницу...")
-                driver.get(MAIN_PAGE_URL)
+                driver.get(current_course_url)
                 time.sleep(2)
                 
                 # Продолжаем цикл, чтобы проверить задания снова
@@ -3480,8 +3586,27 @@ def main():
                     print("⚠ Не удалось нажать на кнопку")
                     break
             else:
-                print("Кнопка 'Показать ещё' не найдена или отключена. Все задания обработаны!")
-                break
+                print("Кнопка 'Показать ещё' не найдена или отключена.")
+                
+                # Если мы на курсе 771, проверяем, завершен ли модуль 2
+                if current_course_id == "771":
+                    print("\n" + "=" * 50)
+                    print("Модуль 2 (курс 771) завершен!")
+                    print("=" * 50)
+                    print("Нажмите Enter для перехода на следующий модуль (курс 772)...")
+                    print("=" * 50)
+                    input("\n>>> Нажмите Enter для продолжения...")
+                    current_course_url = MAIN_PAGE_URL_2
+                    current_course_id = "772"
+                    current_excel_file = "test2.xlsx"
+                    print("Переходим на курс 772...")
+                    driver.get(current_course_url)
+                    time.sleep(3)
+                    # Продолжаем цикл для обработки заданий нового курса
+                    continue
+                else:
+                    print("Все задания обработаны!")
+                    break
         
         print("\n✓ Все задания обработаны!")
         

@@ -1,48 +1,32 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_all
 
-block_cipher = None
+datas = [('test.xlsx', '.'), ('test2.xlsx', '.')]
+binaries = []
+hiddenimports = ['pandas', 'openpyxl', 'selenium']
+tmp_ret = collect_all('selenium')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+
 
 a = Analysis(
     ['help.py'],
     pathex=[],
-    binaries=[],
-    datas=[('test.xlsx', '.')],  # Включаем Excel файл
-    hiddenimports=[
-        'pandas',
-        'openpyxl',
-        'selenium',
-        'selenium.webdriver',
-        'selenium.webdriver.chrome',
-        'selenium.webdriver.chrome.service',
-        'selenium.webdriver.chrome.options',
-        'selenium.webdriver.common.by',
-        'selenium.webdriver.support',
-        'selenium.webdriver.support.ui',
-        'selenium.webdriver.support.expected_conditions',
-        'selenium.webdriver.common.action_chains',
-        'json',
-        're',
-        'time',
-        'os',
-        'sys',
-    ],
+    binaries=binaries,
+    datas=datas,
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
-    cipher=block_cipher,
     noarchive=False,
+    optimize=0,
 )
-
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+pyz = PYZ(a.pure)
 
 exe = EXE(
     pyz,
     a.scripts,
     a.binaries,
-    a.zipfiles,
     a.datas,
     [],
     name='CourseAutomation',
@@ -52,11 +36,10 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=True,  # Оставляем консоль для вывода логов
+    console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
 )
-
