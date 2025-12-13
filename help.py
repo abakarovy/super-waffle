@@ -325,7 +325,7 @@ def go_to_tasks_page(driver):
         print(f"  ⚠ Ошибка при переходе на tasks страницу: {e}")
         return False
 
-def get_task_form(driver, timeout=10):
+def get_task_form(driver, timeout=3):
     """Получает форму задачи с ожиданием загрузки"""
     wait = WebDriverWait(driver, timeout)
     return wait.until(EC.presence_of_element_located((By.ID, "taskForm")))
@@ -684,10 +684,11 @@ def handle_drag_and_drop_task(driver, mappings):
         if has_images:
             try:
                 # Используем JavaScript для получения стабильных идентификаторов изображений
-                image_identifiers = driver.execute_script("""
+                image_info = driver.execute_script("""
                     var optionsPanel = arguments[0];
                     var imageOptions = optionsPanel.querySelectorAll('.OptionsSlide_image__nlliP, .styled__ImageOption-ftJQiu, [draggable="true"]');
                     var identifiers = [];
+                    var imageDetails = [];
                     
                     for (var i = 0; i < imageOptions.length; i++) {
                         var option = imageOptions[i];
@@ -698,14 +699,29 @@ def handle_drag_and_drop_task(driver, mappings):
                             var draggable = option.querySelector('[draggable="true"]') || option;
                             // Сохраняем индекс в исходном порядке
                             identifiers.push(i);
+                            
+                            // Сохраняем детали для отладки
+                            var imageContent = option.querySelector('.styled__ImageContent-eNVTVI, .styled__ImageContent');
+                            var imageClass = imageContent ? imageContent.className : '';
+                            var imageSrc = imageContent ? (imageContent.src || imageContent.getAttribute('src') || imageContent.style.backgroundImage || '') : '';
+                            imageDetails.push({
+                                index: i + 1,
+                                className: imageClass,
+                                src: imageSrc.substring(0, 50) // Первые 50 символов для отладки
+                            });
                         }
                     }
                     
-                    return identifiers;
+                    return {identifiers: identifiers, details: imageDetails};
                 """, task_form.find_element(By.CSS_SELECTOR, ".Options_root__q5QuO, .Options_optionsRows__JttWG, .LinkTask_optionsPanel__GLzIR"))
                 
-                initial_image_order = image_identifiers
+                initial_image_order = image_info['identifiers']
+                image_details = image_info['details']
                 print(f"  [DEBUG] Сохранен исходный порядок изображений: {len(initial_image_order)} элементов")
+                print(f"  [DEBUG] Порядок изображений в панели опций (слева направо, сверху вниз):")
+                for detail in image_details:
+                    className = detail.get('className', 'N/A')
+                    print(f"    {detail['index']}. className: {className}, src: {detail['src']}")
             except Exception as e:
                 print(f"  [DEBUG] Ошибка при сохранении порядка изображений: {e}")
                 initial_image_order = []
@@ -751,7 +767,8 @@ def handle_drag_and_drop_task(driver, mappings):
                             print(f"    ⚠ Не удалось извлечь индекс из '{element_text}', пропускаем")
                             continue
                     
-                    print(f"    Ищем изображение по индексу: {image_index + 1}")
+                    target_idx_str = str(target_index) if 'target_index' in locals() and target_index is not None else '?'
+                    print(f"    Ищем изображение по индексу: {image_index + 1} (для целевой области #{target_idx_str})")
                     
                     # Используем сохраненный исходный порядок изображений, если он есть
                     if initial_image_order and image_index < len(initial_image_order):
@@ -769,15 +786,15 @@ def handle_drag_and_drop_task(driver, mappings):
                                     allOptions = optionsPanel.querySelectorAll('[draggable="true"]');
                                 }
                                 
-                                // Собираем только изображения, которые еще не перемещены, в исходном порядке
+                                // ВАЖНО: Для multi-use drag and drop элементы остаются в панели опций
+                                // Поэтому мы должны использовать исходный порядок из DOM, а не фильтровать перемещенные
+                                // Собираем все изображения в исходном порядке DOM
                                 var imageElements = [];
                                 for (var i = 0; i < allOptions.length; i++) {
                                     var option = allOptions[i];
                                     
-                                    // Проверяем, что элемент еще не перемещен (не находится в drop area)
-                                    if (option.closest('.LinkTaskRow_linkRowContent__XBn6u')) {
-                                        continue; // Элемент уже перемещен
-                                    }
+                                    // Для multi-use типа не проверяем, перемещен ли элемент
+                                    // (элементы остаются в панели опций)
                                     
                                     // Проверяем наличие изображения
                                     var hasImage = option.querySelector('.styled__ImageContent-eNVTVI, .styled__ImageContent');
@@ -793,7 +810,7 @@ def handle_drag_and_drop_task(driver, mappings):
                                     }
                                 }
                                 
-                                // Возвращаем элемент по исходному индексу (если он еще доступен)
+                                // Возвращаем элемент по исходному индексу из DOM (независимо от того, перемещен он или нет)
                                 if (originalIndex < imageElements.length) {
                                     return imageElements[originalIndex];
                                 }
@@ -801,7 +818,7 @@ def handle_drag_and_drop_task(driver, mappings):
                                 // Если индекс выходит за пределы, возможно некоторые изображения уже перемещены
                                 // Пробуем найти по позиции среди всех доступных изображений
                                 return null;
-                            """, task_form.find_element(By.CSS_SELECTOR, ".Options_root__q5QuO, .Options_optionsRows__JttWG, .LinkTask_optionsPanel__GLzIR"), image_index)
+                            """, task_form.find_element(By.CSS_SELECTOR, ".Options_root__q5QuO, .Options_optionsRows__JttWG, .LinkTask_optionsPanel__GLzIR"), image_index, is_multi_use)
                             
                             if source_element:
                                 print(f"    ✓ Найдено изображение по исходному индексу {image_index + 1}")
@@ -832,12 +849,15 @@ def handle_drag_and_drop_task(driver, mappings):
                             
                             for option in image_containers:
                                 try:
-                                    # Проверяем, что элемент еще не перемещен (не находится в drop area)
-                                    try:
-                                        parent = option.find_element(By.XPATH, "./ancestor::div[contains(@class, 'LinkTaskRow_linkRowContent__XBn6u')]")
-                                        continue  # Элемент уже перемещен
-                                    except:
-                                        pass
+                                    # Для multi-use типа не проверяем, перемещен ли элемент
+                                    # (элементы остаются в панели опций и могут использоваться повторно)
+                                    if not is_multi_use:
+                                        # Проверяем, что элемент еще не перемещен (не находится в drop area)
+                                        try:
+                                            parent = option.find_element(By.XPATH, "./ancestor::div[contains(@class, 'LinkTaskRow_linkRowContent__XBn6u')]")
+                                            continue  # Элемент уже перемещен
+                                        except:
+                                            pass
                                     
                                     # Проверяем наличие изображения
                                     has_image = False
@@ -1069,7 +1089,8 @@ def handle_drag_and_drop_task(driver, mappings):
             
             # Находим целевую область по тексту
             target_area = None
-            for target in target_areas:
+            target_index = None  # Сохраняем индекс целевой области для отладки
+            for idx, target in enumerate(target_areas):
                 try:
                     # Пробуем извлечь текст из span с классом MathContent_content
                     try:
@@ -1088,7 +1109,8 @@ def handle_drag_and_drop_task(driver, mappings):
                         parent = target.find_element(By.XPATH, "./..")
                         drop_area = parent.find_element(By.CSS_SELECTOR, ".LinkTaskRow_linkRowContent__XBn6u")
                         target_area = drop_area
-                        print(f"      Найдена целевая область: '{text[:50]}...'")
+                        target_index = idx + 1  # Индекс начинается с 1 (сверху вниз)
+                        print(f"      Найдена целевая область #{target_index} (сверху вниз): '{text[:50]}...'")
                         break
                 except:
                     continue
@@ -1121,10 +1143,13 @@ def handle_drag_and_drop_task(driver, mappings):
                     time.sleep(0.3)
                     
                     # Используем JavaScript для перетаскивания (более надежно чем ActionChains)
+                    # Передаем element_text для правильного определения значения (особенно важно для изображений)
                     success = driver.execute_script("""
                         var source = arguments[0];
                         var target = arguments[1];
                         var isMultiUse = arguments[2] || false;
+                        var elementIndex = arguments[3] || null; // Индекс элемента (для изображений)
+                        var elementIndex = arguments[3] || null; // Индекс элемента (для изображений)
                         
                         try {
                             // Проверяем, не находится ли элемент уже в целевой области
@@ -1188,22 +1213,30 @@ def handle_drag_and_drop_task(driver, mappings):
                                 dataTransfer.setData('application/json', JSON.stringify({id: elementId}));
                             }
                             
-                            // 1. Инициируем dragstart на исходном элементе
-                            var dragStartEvent = new DragEvent('dragstart', { 
-                                bubbles: true, 
-                                cancelable: true,
-                                dataTransfer: dataTransfer
-                            });
-                            draggableElement.dispatchEvent(dragStartEvent);
+                            // 1. Инициируем dragstart на исходном элементе (только если элемент еще не перетаскивается)
+                            try {
+                                var dragStartEvent = new DragEvent('dragstart', { 
+                                    bubbles: true, 
+                                    cancelable: true,
+                                    dataTransfer: dataTransfer
+                                });
+                                draggableElement.dispatchEvent(dragStartEvent);
+                            } catch (e) {
+                                console.log('Ошибка при dragstart (возможно уже перетаскивается):', e);
+                            }
                             
-                            // 2. Инициируем dragover на целевой области
-                            var dragOverEvent = new DragEvent('dragover', { 
-                                bubbles: true, 
-                                cancelable: true,
-                                dataTransfer: dataTransfer
-                            });
-                            dragOverEvent.preventDefault(); // Разрешаем drop
-                            target.dispatchEvent(dragOverEvent);
+                            // 2. Инициируем dragover на целевой области (без hover, чтобы избежать ошибок React DnD)
+                            try {
+                                var dragOverEvent = new DragEvent('dragover', { 
+                                    bubbles: true, 
+                                    cancelable: true,
+                                    dataTransfer: dataTransfer
+                                });
+                                dragOverEvent.preventDefault(); // Разрешаем drop
+                                target.dispatchEvent(dragOverEvent);
+                            } catch (e) {
+                                console.log('Ошибка при dragover:', e);
+                            }
                             
                             // 3. Очищаем целевую область (удаляем пустые элементы)
                             var emptySpans = target.querySelectorAll('span.MathContent_content__2a8XE');
@@ -1258,18 +1291,27 @@ def handle_drag_and_drop_task(driver, mappings):
                                 // Ищем input поля внутри текущей drop area
                                 var inputInTarget = target.querySelector('input[type="hidden"]');
                                 
-                                // Получаем значение из перетащенного элемента
-                                var optionText = clone.textContent.trim() || 
-                                                clone.querySelector('.MathContent_content')?.textContent.trim() || 
-                                                clone.querySelector('span')?.textContent.trim() || '';
+                                // Определяем значение для установки
+                                var valueToSet = null;
                                 
-                                // Пробуем найти data-id или другой идентификатор
-                                var optionId = clone.getAttribute('data-id') || 
-                                              clone.querySelector('[data-id]')?.getAttribute('data-id') ||
-                                              draggableElement.getAttribute('data-id') ||
-                                              optionContainer.getAttribute('data-id') || '';
-                                
-                                var valueToSet = optionId || optionText;
+                                // Если передан индекс элемента (для изображений), используем его
+                                if (elementIndex !== null && elementIndex !== undefined && elementIndex !== '') {
+                                    valueToSet = String(elementIndex);
+                                    console.log('Используем индекс элемента для установки значения:', valueToSet);
+                                } else {
+                                    // Для текстовых элементов получаем значение из перетащенного элемента
+                                    var optionText = clone.textContent.trim() || 
+                                                    clone.querySelector('.MathContent_content')?.textContent.trim() || 
+                                                    clone.querySelector('span')?.textContent.trim() || '';
+                                    
+                                    // Пробуем найти data-id или другой идентификатор
+                                    var optionId = clone.getAttribute('data-id') || 
+                                                  clone.querySelector('[data-id]')?.getAttribute('data-id') ||
+                                                  draggableElement.getAttribute('data-id') ||
+                                                  optionContainer.getAttribute('data-id') || '';
+                                    
+                                    valueToSet = optionId || optionText;
+                                }
                                 
                                 if (inputInTarget) {
                                     console.log('Найден input в drop area:', inputInTarget.name || inputInTarget.id, 'текущее значение:', inputInTarget.value, 'новое значение:', valueToSet);
@@ -1294,16 +1336,112 @@ def handle_drag_and_drop_task(driver, mappings):
                                     
                                     console.log('Значение после обновления:', inputInTarget.value);
                                 } else {
-                                    console.log('⚠ Input не найден в drop area, ищем в родительских элементах...');
-                                    // Ищем input в родительских элементах
-                                    var parent = target.closest('.LinkTaskRow_linkRow__36TU1');
-                                    if (parent) {
-                                        var inputInParent = parent.querySelector('input[type="hidden"]');
-                                        if (inputInParent) {
-                                            console.log('Найден input в родительском элементе:', inputInParent.name || inputInParent.id);
-                                            inputInParent.value = valueToSet;
-                                            inputInParent.dispatchEvent(new Event('input', { bubbles: true }));
-                                            inputInParent.dispatchEvent(new Event('change', { bubbles: true }));
+                                    console.log('⚠ Input не найден в drop area, ищем в корне формы...');
+                                    // Ищем input в корне формы по индексу drop area
+                                    var allHiddenInputs = form.querySelectorAll('input[type="hidden"][name*="questions"]');
+                                    var dropAreas = form.querySelectorAll('.LinkTaskRow_linkRowContent__XBn6u');
+                                    var currentIndex = -1;
+                                    for (var i = 0; i < dropAreas.length; i++) {
+                                        if (dropAreas[i] === target) {
+                                            currentIndex = i;
+                                            break;
+                                        }
+                                    }
+                                    
+                                    if (currentIndex >= 0) {
+                                        if (currentIndex < allHiddenInputs.length) {
+                                            var inputInForm = allHiddenInputs[currentIndex];
+                                            console.log('Найден input в корне формы по индексу:', inputInForm.name, 'текущее значение:', inputInForm.value, 'новое значение:', valueToSet);
+                                            inputInForm.value = valueToSet;
+                                            Object.defineProperty(inputInForm, 'value', {
+                                                value: valueToSet,
+                                                writable: true,
+                                                configurable: true
+                                            });
+                                            inputInForm.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                                            inputInForm.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+                                            console.log('Значение после обновления:', inputInForm.value);
+                                        } else {
+                                            // Создаем новый input для последнего элемента
+                                            console.log('Создаем новый input для индекса', currentIndex);
+                                            var firstInput = allHiddenInputs[0];
+                                            if (firstInput && valueToSet) {
+                                                var namePattern = firstInput.name;
+                                                var match = namePattern.match(/questions\[(\d+)\]/);
+                                                if (match) {
+                                                    var questionId = match[1];
+                                                    var lastInput = allHiddenInputs[allHiddenInputs.length - 1];
+                                                    var lastMatch = lastInput.name.match(/\[(\d+)\]$/);
+                                                    var nextId = lastMatch ? String(parseInt(lastMatch[1]) + 1) : '10009546';
+                                                    
+                                                    var newInput = document.createElement('input');
+                                                    newInput.type = 'hidden';
+                                                    newInput.name = 'questions[' + questionId + '][' + nextId + ']';
+                                                    newInput.tabIndex = -1;
+                                                    newInput.value = valueToSet;
+                                                    
+                                                    // Вставляем в корень формы
+                                                    var linkRoot = form.querySelector('[class*="Link_root"]') || form.querySelector('div > div > div');
+                                                    if (linkRoot) {
+                                                        linkRoot.appendChild(newInput);
+                                                    } else {
+                                                        form.appendChild(newInput);
+                                                    }
+                                                    
+                                                    newInput.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                                                    newInput.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+                                                    console.log('✓ Создан новый input:', newInput.name, '=', valueToSet);
+                                                }
+                                            }
+                                        }
+                                    } else if (currentIndex >= 0 && currentIndex >= allHiddenInputs.length) {
+                                        // Создаем новый input для последнего элемента
+                                        console.log('Создаем новый input для индекса', currentIndex, 'значение:', valueToSet);
+                                        var firstInput = allHiddenInputs[0];
+                                        if (firstInput && valueToSet) {
+                                            var namePattern = firstInput.name;
+                                            var match = namePattern.match(/questions\[(\d+)\]/);
+                                            if (match) {
+                                                var questionId = match[1];
+                                                var lastInput = allHiddenInputs[allHiddenInputs.length - 1];
+                                                var lastMatch = lastInput.name.match(/\[(\d+)\]$/);
+                                                var nextId = lastMatch ? String(parseInt(lastMatch[1]) + 1) : '10009546';
+                                                
+                                                var newInput = document.createElement('input');
+                                                newInput.type = 'hidden';
+                                                newInput.name = 'questions[' + questionId + '][' + nextId + ']';
+                                                newInput.tabIndex = -1;
+                                                newInput.value = valueToSet;
+                                                
+                                                // Вставляем в корень формы
+                                                var linkRoot = form.querySelector('[class*="Link_root"]') || form.querySelector('div > div > div');
+                                                if (linkRoot) {
+                                                    linkRoot.appendChild(newInput);
+                                                } else {
+                                                    form.appendChild(newInput);
+                                                }
+                                                
+                                                Object.defineProperty(newInput, 'value', {
+                                                    value: valueToSet,
+                                                    writable: true,
+                                                    configurable: true
+                                                });
+                                                newInput.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                                                newInput.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+                                                console.log('✓ Создан новый input:', newInput.name, '=', valueToSet);
+                                            }
+                                        }
+                                    } else {
+                                        // Ищем input в родительских элементах
+                                        var parent = target.closest('.LinkTaskRow_linkRow__36TU1');
+                                        if (parent) {
+                                            var inputInParent = parent.querySelector('input[type="hidden"]');
+                                            if (inputInParent) {
+                                                console.log('Найден input в родительском элементе:', inputInParent.name || inputInParent.id);
+                                                inputInParent.value = valueToSet;
+                                                inputInParent.dispatchEvent(new Event('input', { bubbles: true }));
+                                                inputInParent.dispatchEvent(new Event('change', { bubbles: true }));
+                                            }
                                         }
                                     }
                                 }
@@ -1401,7 +1539,7 @@ def handle_drag_and_drop_task(driver, mappings):
                             console.error('Ошибка при перемещении:', e);
                             return false;
                         }
-                    """, source_element, target_area, is_multi_use)
+                    """, source_element, target_area, is_multi_use, str(element_text) if has_images else None)
                     
                     time.sleep(1)  # Увеличиваем время ожидания для обновления UI и состояния формы
                     
@@ -1545,7 +1683,7 @@ def handle_drag_and_drop_task(driver, mappings):
                                 return true;
                             """, source_element, target_area)
                             time.sleep(0.3)
-                            matched_count += 1
+                            # matched_count уже увеличен выше, не увеличиваем снова
                             print(f"    ✓ Перетащено '{element_text}' в '{target_text}' (упрощенный метод)")
                         except:
                             print(f"    ⚠ Не удалось переместить '{element_text}' в '{target_text}'")
@@ -1560,6 +1698,116 @@ def handle_drag_and_drop_task(driver, mappings):
         # ФИНАЛЬНОЕ ОБНОВЛЕНИЕ: Принудительно обновляем все скрытые поля после всех перетаскиваний
         if matched_count > 0:
             time.sleep(0.5)  # Даем время DOM полностью обновиться
+            
+            # ВАЖНО: После всех перетаскиваний обновляем все скрытые поля формы
+            # Это особенно важно для последнего элемента
+            try:
+                task_form = get_task_form(driver)
+                print("  Обновляем все скрытые поля формы после перетаскиваний...")
+                driver.execute_script("""
+                    var form = arguments[0];
+                    if (!form) return;
+                    
+                    // Находим все drop areas
+                    var dropAreas = form.querySelectorAll('.LinkTaskRow_linkRowContent__XBn6u');
+                    var hiddenInputs = form.querySelectorAll('input[type="hidden"]');
+                    
+                    console.log('Найдено drop areas:', dropAreas.length);
+                    console.log('Найдено hidden inputs:', hiddenInputs.length);
+                    
+                    // Обновляем каждую drop area
+                    dropAreas.forEach(function(dropArea, index) {
+                        var option = dropArea.querySelector('.OptionsSlide_option__PBAys, .styled__Wrapper-cixSOf, .styled__ImageOption-ftJQiu');
+                        if (option) {
+                            // Для изображений ищем data-id или индекс
+                            var optionId = option.getAttribute('data-id') || 
+                                          option.querySelector('[data-id]')?.getAttribute('data-id') || '';
+                            
+                            // Для изображений также пробуем найти индекс по позиции в исходной панели
+                            var imageContent = option.querySelector('.styled__ImageContent-eNVTVI, .styled__ImageContent');
+                            var valueToSet = optionId;
+                            
+                            // Если это изображение и нет data-id, пробуем найти индекс
+                            if (imageContent && !valueToSet) {
+                                // Ищем в панели опций исходный элемент с таким же изображением
+                                var optionsPanel = form.querySelector('.Options_root__q5QuO, .Options_optionsRows__JttWG, .LinkTask_optionsPanel__GLzIR');
+                                if (optionsPanel) {
+                                    var allOptions = optionsPanel.querySelectorAll('.OptionsSlide_image__nlliP, .styled__ImageOption-ftJQiu, [draggable="true"]');
+                                    for (var i = 0; i < allOptions.length; i++) {
+                                        var opt = allOptions[i];
+                                        var optImage = opt.querySelector('.styled__ImageContent-eNVTVI, .styled__ImageContent, img');
+                                        var optImageSrc = optImage ? (optImage.src || optImage.getAttribute('src')) : null;
+                                        var imageSrc = imageContent.src || imageContent.getAttribute('src');
+                                        if (optImage && optImageSrc && imageSrc && optImageSrc === imageSrc) {
+                                            valueToSet = String(i + 1); // Индекс начинается с 1
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            // Если все еще нет значения, используем текст
+                            if (!valueToSet) {
+                                var optionText = option.textContent.trim() || 
+                                                option.querySelector('.MathContent_content__2a8XE')?.textContent.trim() || 
+                                                option.querySelector('.MathContent_content')?.textContent.trim() || '';
+                                valueToSet = optionText;
+                            }
+                            
+                            // Ищем input в этой drop area
+                            var inputInArea = dropArea.querySelector('input[type="hidden"]');
+                            if (inputInArea && valueToSet) {
+                                inputInArea.value = valueToSet;
+                                Object.defineProperty(inputInArea, 'value', {
+                                    value: valueToSet,
+                                    writable: true,
+                                    configurable: true
+                                });
+                                inputInArea.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                                inputInArea.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+                                console.log('Обновлено поле', index, ':', inputInArea.name || inputInArea.id, '=', valueToSet);
+                            }
+                            
+                            // Также ищем скрытые поля по имени/ID, связанные с этой drop area
+                            var parentRow = dropArea.closest('.LinkTaskRow_linkRow__36TU1');
+                            if (parentRow) {
+                                hiddenInputs.forEach(function(input) {
+                                    var inputName = (input.name || input.id || '').toLowerCase();
+                                    var inputIndex = input.getAttribute('data-index') || 
+                                                   input.getAttribute('data-answer-index') || '';
+                                    
+                                    // Проверяем, соответствует ли поле этой drop area
+                                    if ((inputName.includes('answer') && (inputName.includes(String(index)) || inputIndex == index)) ||
+                                        (inputName.includes('option') && (inputName.includes(String(index)) || inputIndex == index)) ||
+                                        (input.getAttribute('data-row-index') == index) ||
+                                        (input.closest('.LinkTaskRow_linkRow__36TU1') === parentRow)) {
+                                        
+                                        if (valueToSet) {
+                                            input.value = valueToSet;
+                                            Object.defineProperty(input, 'value', {
+                                                value: valueToSet,
+                                                writable: true,
+                                                configurable: true
+                                            });
+                                            input.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                                            input.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                    });
+                    
+                    // Инициируем события на форме для обновления React состояния
+                    var formChangeEvent = new Event('change', { bubbles: true, cancelable: true });
+                    form.dispatchEvent(formChangeEvent);
+                    var formInputEvent = new Event('input', { bubbles: true, cancelable: true });
+                    form.dispatchEvent(formInputEvent);
+                """, task_form)
+                print("  ✓ Все скрытые поля формы обновлены")
+            except Exception as e:
+                print(f"  ⚠ Ошибка при обновлении скрытых полей: {e}")
+            
             try:
                 task_form = get_task_form(driver)
                 driver.execute_script("""
@@ -1569,17 +1817,106 @@ def handle_drag_and_drop_task(driver, mappings):
                         
                         // Обновляем все drop areas
                         var dropAreas = form.querySelectorAll('.LinkTaskRow_linkRowContent__XBn6u');
+                        console.log('Найдено drop areas:', dropAreas.length);
                         dropAreas.forEach(function(dropArea, index) {
-                            var option = dropArea.querySelector('.OptionsSlide_option__PBAys, .styled__Wrapper-cixSOf');
-                            var inputInArea = dropArea.querySelector('input[type="hidden"]');
+                            // Ищем изображение в drop area - может быть в разных местах
+                            var option = dropArea.querySelector('.OptionsSlide_option__PBAys, .styled__Wrapper-cixSOf, .styled__ImageOption-ftJQiu, .OptionsSlide_image__nlliP, .styled__ImageAnswer-hpPSnN');
+                            
+                            // ВАЖНО: Скрытые поля находятся в корне формы, а не в drop area
+                            // Ищем input в корне формы по индексу
+                            var allInputs = form.querySelectorAll('input[type="hidden"][name*="questions"]');
+                            var inputInArea = null;
+                            if (allInputs.length > index) {
+                                inputInArea = allInputs[index];
+                            }
+                            
+                            // Если не нашли по индексу, пробуем найти в drop area или родительском элементе
+                            if (!inputInArea) {
+                                inputInArea = dropArea.querySelector('input[type="hidden"]');
+                                if (!inputInArea) {
+                                    var parentRow = dropArea.closest('.LinkTaskRow_linkRow__36TU1');
+                                    if (parentRow) {
+                                        inputInArea = parentRow.querySelector('input[type="hidden"]');
+                                    }
+                                }
+                            }
+                            
+                            // Если не нашли option, ищем изображение напрямую
+                            if (!option) {
+                                var imageAnswer = dropArea.querySelector('.styled__ImageAnswer-hpPSnN');
+                                if (imageAnswer) {
+                                    option = imageAnswer;
+                                }
+                            }
+                            
+                            // Если не нашли option, ищем draggable изображение в drop area
+                            if (!option) {
+                                var draggableImage = dropArea.querySelector('.OptionsSlide_image__nlliP[draggable="true"], .styled__ImageOption-ftJQiu[draggable="true"]');
+                                if (draggableImage) {
+                                    option = draggableImage;
+                                }
+                            }
                             
                             if (option && inputInArea) {
-                                var optionText = option.textContent.trim() || 
-                                                option.querySelector('.MathContent_content')?.textContent.trim() || 
-                                                option.querySelector('span')?.textContent.trim() || '';
-                                var optionId = option.getAttribute('data-id') || 
-                                              option.querySelector('[data-id]')?.getAttribute('data-id') || '';
-                                var valueToSet = optionId || optionText;
+                                // Проверяем, является ли это изображением
+                                // Ищем изображение в разных местах структуры
+                                var imageContent = option.querySelector('.styled__ImageContent-eNVTVI, .styled__ImageContent-hjRbwv, .styled__ImageContent, img');
+                                
+                                // Если не нашли в option, ищем в drop area напрямую
+                                if (!imageContent) {
+                                    imageContent = dropArea.querySelector('.styled__ImageContent-eNVTVI, .styled__ImageContent-hjRbwv, .styled__ImageContent, img');
+                                }
+                                var valueToSet = null;
+                                
+                                if (imageContent) {
+                                    // Для изображений ищем data-id или индекс
+                                    var optionId = option.getAttribute('data-id') || 
+                                                  option.querySelector('[data-id]')?.getAttribute('data-id') || '';
+                                    
+                                    if (optionId) {
+                                        valueToSet = optionId;
+                                    } else {
+                                        // Если нет data-id, пробуем найти индекс по изображению в панели опций
+                                        var optionsPanel = form.querySelector('.Options_root__q5QuO, .Options_optionsRows__JttWG, .LinkTask_optionsPanel__GLzIR');
+                                        if (optionsPanel) {
+                                            var allOptions = optionsPanel.querySelectorAll('.OptionsSlide_image__nlliP, .styled__ImageOption-ftJQiu, [draggable="true"]');
+                                            for (var i = 0; i < allOptions.length; i++) {
+                                                var opt = allOptions[i];
+                                                var optImage = opt.querySelector('.styled__ImageContent-eNVTVI, .styled__ImageContent, img');
+                                                var optImageSrc = optImage.src || optImage.getAttribute('src');
+                                                var imageSrc = imageContent.src || imageContent.getAttribute('src');
+                                                if (optImage && optImageSrc && imageSrc && optImageSrc === imageSrc) {
+                                                    valueToSet = String(i + 1); // Индекс начинается с 1
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        
+                                        // Если все еще не найдено, используем индекс по позиции в drop area
+                                        if (!valueToSet) {
+                                            // Пробуем найти индекс по порядку в исходной панели
+                                            var imageSrc = imageContent.src || imageContent.getAttribute('src');
+                                            if (imageSrc) {
+                                                var allImages = form.querySelectorAll('.styled__ImageContent-eNVTVI, .styled__ImageContent');
+                                                for (var j = 0; j < allImages.length; j++) {
+                                                    if (allImages[j].src === imageSrc || allImages[j].getAttribute('src') === imageSrc) {
+                                                        valueToSet = String(j + 1);
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    // Для текстовых элементов
+                                    var optionText = option.textContent.trim() || 
+                                                    option.querySelector('.MathContent_content__2a8XE')?.textContent.trim() || 
+                                                    option.querySelector('.MathContent_content')?.textContent.trim() || 
+                                                    option.querySelector('span')?.textContent.trim() || '';
+                                    var optionId = option.getAttribute('data-id') || 
+                                                  option.querySelector('[data-id]')?.getAttribute('data-id') || '';
+                                    valueToSet = optionId || optionText;
+                                }
                                 
                                 if (valueToSet) {
                                     // Принудительно устанавливаем значение
@@ -1600,9 +1937,131 @@ def handle_drag_and_drop_task(driver, mappings):
                                     console.log('ФИНАЛЬНО обновлено поле', index, ':', inputInArea.name || inputInArea.id, '=', valueToSet, 'текущее значение:', inputInArea.value);
                                 } else {
                                     console.log('⚠ Поле', index, 'пустое, значение не установлено');
+                                    // Если значение не установлено, но есть изображение, пробуем найти индекс по изображению
+                                    if (imageContent) {
+                                        var imageSrc = imageContent.src || imageContent.getAttribute('src') || imageContent.style.backgroundImage;
+                                        console.log('⚠ Пробуем найти индекс по изображению для поля', index);
+                                        // Ищем в панели опций
+                                        var optionsPanel = form.querySelector('.Options_root__q5QuO, .Options_optionsRows__JttWG, .LinkTask_optionsPanel__GLzIR');
+                                        if (optionsPanel) {
+                                            var allOptions = optionsPanel.querySelectorAll('.OptionsSlide_image__nlliP, .styled__ImageOption-ftJQiu, [draggable="true"]');
+                                            for (var k = 0; k < allOptions.length; k++) {
+                                                var opt = allOptions[k];
+                                                var optImage = opt.querySelector('.styled__ImageContent-eNVTVI, .styled__ImageContent, img');
+                                                if (optImage) {
+                                                    var optImageSrc = optImage.src || optImage.getAttribute('src') || optImage.style.backgroundImage;
+                                                    if (optImageSrc && imageSrc && optImageSrc === imageSrc) {
+                                                        valueToSet = String(k + 1);
+                                                        inputInArea.value = valueToSet;
+                                                        Object.defineProperty(inputInArea, 'value', {
+                                                            value: valueToSet,
+                                                            writable: true,
+                                                            configurable: true
+                                                        });
+                                                        inputInArea.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                                                        inputInArea.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+                                                        console.log('✓ Найдено и установлено значение для поля', index, ':', valueToSet);
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             } else {
                                 console.log('⚠ Поле', index, 'не найдено (option:', !!option, 'input:', !!inputInArea, ')');
+                                // Если input не найден в drop area, ищем в родительских элементах
+                                if (!inputInArea) {
+                                    var parentRow = dropArea.closest('.LinkTaskRow_linkRow__36TU1');
+                                    if (parentRow) {
+                                        inputInArea = parentRow.querySelector('input[type="hidden"]');
+                                        if (inputInArea) {
+                                            console.log('✓ Найден input в родительском элементе для поля', index);
+                                            // Пробуем найти значение для изображения
+                                            var imageContent = dropArea.querySelector('.styled__ImageContent-eNVTVI, .styled__ImageContent-hjRbwv, .styled__ImageContent, img');
+                                            if (imageContent) {
+                                                var optionsPanel = form.querySelector('.Options_root__q5QuO, .Options_optionsRows__JttWG, .LinkTask_optionsPanel__GLzIR');
+                                                if (optionsPanel) {
+                                                    var allOptions = optionsPanel.querySelectorAll('.OptionsSlide_image__nlliP, .styled__ImageOption-ftJQiu, [draggable="true"]');
+                                                    for (var k = 0; k < allOptions.length; k++) {
+                                                        var opt = allOptions[k];
+                                                        var optImage = opt.querySelector('.styled__ImageContent-eNVTVI, .styled__ImageContent, img');
+                                                        if (optImage) {
+                                                            var optImageSrc = optImage.src || optImage.getAttribute('src') || optImage.style.backgroundImage;
+                                                            var imageSrc = imageContent.src || imageContent.getAttribute('src') || imageContent.style.backgroundImage;
+                                                            if (optImageSrc && imageSrc && optImageSrc === imageSrc) {
+                                                                var valueToSet = String(k + 1);
+                                                                inputInArea.value = valueToSet;
+                                                                Object.defineProperty(inputInArea, 'value', {
+                                                                    value: valueToSet,
+                                                                    writable: true,
+                                                                    configurable: true
+                                                                });
+                                                                inputInArea.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                                                                inputInArea.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+                                                                console.log('✓ Найдено и установлено значение в родительском элементе для поля', index, ':', valueToSet);
+                                                                break;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                // Если все еще не нашли input, ищем все скрытые поля и пробуем найти нужное по индексу
+                                if (!inputInArea) {
+                                    var allHiddenInputs = form.querySelectorAll('input[type="hidden"]');
+                                    console.log('⚠ Ищем input среди всех скрытых полей (всего:', allHiddenInputs.length, ')');
+                                    // Пробуем найти input по индексу или имени
+                                    for (var m = 0; m < allHiddenInputs.length; m++) {
+                                        var hiddenInput = allHiddenInputs[m];
+                                        var inputName = (hiddenInput.name || hiddenInput.id || '').toLowerCase();
+                                        var inputIndex = hiddenInput.getAttribute('data-index') || 
+                                                       hiddenInput.getAttribute('data-answer-index') || '';
+                                        
+                                        // Проверяем, соответствует ли поле этой drop area
+                                        if ((inputName.includes('answer') && (inputName.includes(String(index)) || inputIndex == index)) ||
+                                            (inputName.includes('option') && (inputName.includes(String(index)) || inputIndex == index)) ||
+                                            (hiddenInput.getAttribute('data-row-index') == index) ||
+                                            (hiddenInput.closest('.LinkTaskRow_linkRow__36TU1') === dropArea.closest('.LinkTaskRow_linkRow__36TU1'))) {
+                                            inputInArea = hiddenInput;
+                                            console.log('✓ Найден input по индексу/имени для поля', index, ':', inputName || inputIndex);
+                                            
+                                            // Пробуем найти значение для изображения
+                                            var imageContent = dropArea.querySelector('.styled__ImageContent-eNVTVI, .styled__ImageContent-hjRbwv, .styled__ImageContent, img');
+                                            if (imageContent && inputInArea) {
+                                                var optionsPanel = form.querySelector('.Options_root__q5QuO, .Options_optionsRows__JttWG, .LinkTask_optionsPanel__GLzIR');
+                                                if (optionsPanel) {
+                                                    var allOptions = optionsPanel.querySelectorAll('.OptionsSlide_image__nlliP, .styled__ImageOption-ftJQiu, [draggable="true"]');
+                                                    for (var k = 0; k < allOptions.length; k++) {
+                                                        var opt = allOptions[k];
+                                                        var optImage = opt.querySelector('.styled__ImageContent-eNVTVI, .styled__ImageContent, img');
+                                                        if (optImage) {
+                                                            var optImageSrc = optImage.src || optImage.getAttribute('src') || optImage.style.backgroundImage;
+                                                            var imageSrc = imageContent.src || imageContent.getAttribute('src') || imageContent.style.backgroundImage;
+                                                            if (optImageSrc && imageSrc && optImageSrc === imageSrc) {
+                                                                var valueToSet = String(k + 1);
+                                                                inputInArea.value = valueToSet;
+                                                                Object.defineProperty(inputInArea, 'value', {
+                                                                    value: valueToSet,
+                                                                    writable: true,
+                                                                    configurable: true
+                                                                });
+                                                                inputInArea.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                                                                inputInArea.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+                                                                console.log('✓ Найдено и установлено значение для поля', index, ':', valueToSet);
+                                                                break;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
                             }
                         });
                         
@@ -1625,6 +2084,230 @@ def handle_drag_and_drop_task(driver, mappings):
                 print(f"  ⚠ Ошибка при финальном обновлении полей: {final_update_error}")
         
         print(f"  ✓ Выполнено перетаскиваний: {matched_count}")
+        
+        # ВАЖНО: После всех перетаскиваний создаем/обновляем все скрытые поля с правильными ID изображений
+        if matched_count > 0 and has_images:
+            try:
+                time.sleep(0.5)  # Даем время DOM обновиться
+                task_form = get_task_form(driver)
+                driver.execute_script("""
+                    var form = arguments[0];
+                    if (form) {
+                        console.log('=== СОЗДАНИЕ/ОБНОВЛЕНИЕ ВСЕХ СКРЫТЫХ ПОЛЕЙ ===');
+                        
+                        // Находим все drop areas
+                        var dropAreas = form.querySelectorAll('.LinkTaskRow_linkRowContent__XBn6u');
+                        console.log('Найдено drop areas:', dropAreas.length);
+                        
+                        // Находим все существующие скрытые поля
+                        var allInputs = form.querySelectorAll('input[type="hidden"][name*="questions"]');
+                        console.log('Найдено существующих скрытых полей:', allInputs.length);
+                        
+                        // Получаем questionId из первого поля
+                        var questionId = null;
+                        if (allInputs.length > 0) {
+                            var firstInput = allInputs[0];
+                            var match = firstInput.name.match(/questions\[(\d+)\]/);
+                            if (match) {
+                                questionId = match[1];
+                            }
+                        }
+                        
+                        if (!questionId) {
+                            console.log('⚠ Не удалось определить questionId');
+                            return;
+                        }
+                        
+                        // Находим ID изображений в панели опций (в исходном порядке)
+                        // Создаем маппинг: класс изображения -> ID
+                        var optionsPanel = form.querySelector('.Options_root__q5QuO, .Options_optionsRows__JttWG, .LinkTask_optionsPanel__GLzIR');
+                        var imageClassToId = {}; // Маппинг класса изображения к ID
+                        var imageOrder = []; // Порядок изображений по классам
+                        
+                        if (optionsPanel) {
+                            var allOptions = optionsPanel.querySelectorAll('.OptionsSlide_image__nlliP, .styled__ImageOption-ftJQiu, [draggable="true"]');
+                            for (var i = 0; i < allOptions.length; i++) {
+                                var opt = allOptions[i];
+                                var optImage = opt.querySelector('.styled__ImageContent-eNVTVI, .styled__ImageContent');
+                                if (optImage) {
+                                    var imageClass = optImage.className;
+                                    var optId = opt.getAttribute('data-id') || 
+                                               opt.querySelector('[data-id]')?.getAttribute('data-id') || '';
+                                    
+                                    // Если нет data-id, пробуем найти ID из других источников
+                                    if (!optId) {
+                                        // Пробуем найти ID из структуры или других атрибутов
+                                        var parentId = opt.getAttribute('id') || opt.closest('[id]')?.getAttribute('id') || '';
+                                        if (parentId && /^\d+$/.test(parentId)) {
+                                            optId = parentId;
+                                        }
+                                    }
+                                    
+                                    if (imageClass) {
+                                        imageClassToId[imageClass] = optId;
+                                        imageOrder.push(imageClass);
+                                    }
+                                }
+                            }
+                        }
+                        console.log('Маппинг классов изображений к ID:', imageClassToId);
+                        console.log('Порядок изображений:', imageOrder);
+                        
+                        // Для каждой drop area находим изображение и его ID
+                        // ВАЖНО: ID изображений могут быть в разных местах - проверяем все возможные источники
+                        var dropAreaValues = [];
+                        dropAreas.forEach(function(dropArea, index) {
+                            var imageElement = dropArea.querySelector('.styled__ImageContent-eNVTVI, .styled__ImageContent');
+                            if (imageElement) {
+                                // Находим родительский draggable элемент
+                                var draggableParent = imageElement.closest('[draggable="true"]') || 
+                                                     imageElement.closest('.OptionsSlide_image__nlliP') ||
+                                                     imageElement.closest('.styled__ImageOption-ftJQiu') ||
+                                                     imageElement.closest('.LinkTaskRow_option__Iw-In');
+                                
+                                var imageId = null;
+                                
+                                if (draggableParent) {
+                                    // Пробуем найти ID из data-id
+                                    imageId = draggableParent.getAttribute('data-id') || 
+                                             draggableParent.querySelector('[data-id]')?.getAttribute('data-id') || '';
+                                    
+                                    // Если нет data-id, ищем по классу изображения в панели опций
+                                    if (!imageId && optionsPanel) {
+                                        var imageClass = imageElement.className;
+                                        var allOptions = optionsPanel.querySelectorAll('.OptionsSlide_image__nlliP, .styled__ImageOption-ftJQiu, [draggable="true"]');
+                                        for (var j = 0; j < allOptions.length; j++) {
+                                            var opt = allOptions[j];
+                                            var optImage = opt.querySelector('.styled__ImageContent-eNVTVI, .styled__ImageContent');
+                                            if (optImage && optImage.className === imageClass) {
+                                                imageId = opt.getAttribute('data-id') || 
+                                                         opt.querySelector('[data-id]')?.getAttribute('data-id') || '';
+                                                if (imageId) break;
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Если все еще нет ID, пробуем найти по порядку в панели опций
+                                    // Используем индекс изображения в исходном порядке (1-based)
+                                    if (!imageId && optionsPanel) {
+                                        var allOptions = optionsPanel.querySelectorAll('.OptionsSlide_image__nlliP, .styled__ImageOption-ftJQiu, [draggable="true"]');
+                                        var imageClass = imageElement.className;
+                                        for (var j = 0; j < allOptions.length; j++) {
+                                            var opt = allOptions[j];
+                                            var optImage = opt.querySelector('.styled__ImageContent-eNVTVI, .styled__ImageContent');
+                                            if (optImage && optImage.className === imageClass) {
+                                                // ID может быть вычислен на основе позиции или других факторов
+                                                // Пробуем найти в существующих input полях
+                                                if (allInputs.length > j) {
+                                                    var existingValue = allInputs[j].value;
+                                                    if (existingValue && /^\d+$/.test(existingValue)) {
+                                                        imageId = existingValue;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                // Если ID не найден, используем значение из существующего input или генерируем
+                                if (!imageId && index < allInputs.length) {
+                                    var existingValue = allInputs[idx].value;
+                                    if (existingValue && /^\d+$/.test(existingValue)) {
+                                        imageId = existingValue;
+                                    }
+                                }
+                                
+                                dropAreaValues.push({
+                                    index: index,
+                                    imageId: imageId
+                                });
+                                console.log('Drop area', index, ':', imageId || 'ID не найден');
+                            } else {
+                                dropAreaValues.push({
+                                    index: index,
+                                    imageId: null
+                                });
+                                console.log('⚠ Drop area', index, ': изображение не найдено');
+                            }
+                        });
+                        
+                        // Создаем или обновляем скрытые поля
+                        dropAreaValues.forEach(function(item, idx) {
+                            if (item.imageId) {
+                                // Определяем имя поля (используем существующие имена или создаем новые)
+                                var fieldName = null;
+                                var fieldId = null;
+                                
+                                // Пробуем найти существующее поле по индексу
+                                if (idx < allInputs.length) {
+                                    var existingInput = allInputs[idx];
+                                    fieldName = existingInput.name;
+                                    var match = fieldName.match(/\[(\d+)\]$/);
+                                    if (match) {
+                                        fieldId = match[1];
+                                    }
+                                } else {
+                                    // Создаем новое имя поля
+                                    if (allInputs.length > 0) {
+                                        var lastInput = allInputs[allInputs.length - 1];
+                                        var lastMatch = lastInput.name.match(/\[(\d+)\]$/);
+                                        if (lastMatch) {
+                                            fieldId = String(parseInt(lastMatch[1]) + 1);
+                                        } else {
+                                            fieldId = '10009546'; // Fallback
+                                        }
+                                    } else {
+                                        fieldId = '10009542'; // Первое поле
+                                    }
+                                    fieldName = 'questions[' + questionId + '][' + fieldId + ']';
+                                }
+                                
+                                // Находим или создаем input
+                                var input = null;
+                                if (idx < allInputs.length) {
+                                    input = allInputs[idx];
+                                } else {
+                                    // Создаем новый input
+                                    input = document.createElement('input');
+                                    input.type = 'hidden';
+                                    input.name = fieldName;
+                                    input.tabIndex = -1;
+                                    
+                                    // Вставляем в корень формы
+                                    var linkRoot = form.querySelector('[class*="Link_root"]') || form.querySelector('div > div > div');
+                                    if (linkRoot) {
+                                        linkRoot.appendChild(input);
+                                    } else {
+                                        form.appendChild(input);
+                                    }
+                                    console.log('✓ Создан новый input:', fieldName);
+                                }
+                                
+                                // Устанавливаем значение (ID изображения)
+                                input.value = item.imageId;
+                                Object.defineProperty(input, 'value', {
+                                    value: item.imageId,
+                                    writable: true,
+                                    configurable: true
+                                });
+                                input.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                                input.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+                                console.log('✓ Установлено значение для', fieldName, ':', item.imageId);
+                            }
+                        });
+                        
+                        // Инициируем события на форме
+                        form.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+                        form.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                        
+                        console.log('=== СОЗДАНИЕ/ОБНОВЛЕНИЕ ЗАВЕРШЕНО ===');
+                    }
+                """, task_form)
+                print("  ✓ Все скрытые поля созданы/обновлены с правильными ID изображений")
+            except Exception as e:
+                print(f"  ⚠ Ошибка при создании/обновлении скрытых полей: {e}")
+        
         return matched_count > 0
         
     except Exception as e:
@@ -1898,7 +2581,7 @@ def submit_task_form(driver):
                 print("  ✓ Кликнули на кнопку 'Ответить' через JS")
             
             print("  ✓ Форма отправлена, ждем появления кнопки 'Дальше'...")
-            time.sleep(0.8)  # Уменьшено время ожидания для обработки формы
+            time.sleep(0.5)  # Уменьшено время ожидания для обработки формы
         else:
             print("  Задача уже решена, ищем кнопку 'Дальше'...")
             time.sleep(0.3)  # Небольшая задержка для стабильности
@@ -2019,8 +2702,8 @@ def submit_task_form(driver):
                     # Сохраняем текущий URL перед переходом
                     url_before = driver.current_url
                     
-                    # Ждем изменения URL или появления новой формы задачи (быстро - максимум 1.5 секунды)
-                    wait = WebDriverWait(driver, 1.5)
+                    # Ждем изменения URL или появления новой формы задачи (быстро - максимум 1 секунда)
+                    wait = WebDriverWait(driver, 1.0)
                     try:
                         # Ждем изменения URL (быстро)
                         wait.until(lambda d: d.current_url != url_before)
@@ -2035,14 +2718,14 @@ def submit_task_form(driver):
                             wait.until(EC.presence_of_element_located((By.ID, "taskForm")))
                         except:
                             # Если ничего не произошло, просто ждем немного (меньше времени)
-                            time.sleep(0.3)
+                            time.sleep(0.1)
                     
                     # Дополнительная проверка: убеждаемся, что форма задачи обновилась
                     # Ждем немного, чтобы React успел обновить содержимое (уменьшено время)
-                    time.sleep(0.2)
+                    time.sleep(0.1)
                 except Exception as e:
                     # Fallback: ждем меньше времени для загрузки
-                    time.sleep(0.5)
+                    time.sleep(0.2)
                 
                 return True
             else:
