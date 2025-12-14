@@ -338,6 +338,43 @@ def detect_task_type(driver):
         task_form = get_task_form(driver)
         print("  Форма задачи загружена")
         
+        # Проверяем, является ли задача уже решенной (наличие элементов Solved_block)
+        # Это должно быть первой проверкой, так как HTML меняется для решенных задач
+        try:
+            # Проверяем различные варианты классов для решенных задач
+            solved_selectors = [
+                ".Solved_block__+9eqO",
+                "[class*='Solved_block']",
+                "[class*='Solved_column']",
+                "[class*='Solved_input']",
+                "[class*='Solved_user']",
+                "[class*='Solved_correct']",
+                ".Solved_input__CZlOd",
+                ".Solved_column__XCV8c"
+            ]
+            
+            for selector in solved_selectors:
+                try:
+                    solved_elements = task_form.find_elements(By.CSS_SELECTOR, selector)
+                    if solved_elements:
+                        print(f"  ✓ Задача уже решена (найдены элементы Solved: {selector})")
+                        return "solved"
+                except:
+                    continue
+            
+            # Дополнительная проверка: ищем текст "Правильный ответ:" или "Ваш ответ:"
+            try:
+                solved_text = task_form.find_elements(By.XPATH, ".//*[contains(text(), 'Правильный ответ:') or contains(text(), 'Ваш ответ:')]")
+                if solved_text:
+                    print("  ✓ Задача уже решена (найден текст 'Правильный ответ' или 'Ваш ответ')")
+                    return "solved"
+            except:
+                pass
+                
+        except Exception as e:
+            # Игнорируем ошибки при проверке
+            pass
+        
         # Проверяем наличие различных элементов для определения типа
         
         # 1. Checkbox - множественный выбор
@@ -412,6 +449,47 @@ def detect_task_type(driver):
             if cm_editor:
                 print("  Тип задачи: CODE (написание кода) - найден CodeMirror с data-language")
                 return "code"
+        except:
+            pass
+        
+        # Самая общая проверка: ищем любой CodeMirror редактор (без дополнительных условий)
+        try:
+            cm_editor = task_form.find_element(By.CSS_SELECTOR, ".cm-editor")
+            if cm_editor:
+                print("  Тип задачи: CODE (написание кода) - найден CodeMirror редактор")
+                return "code"
+        except:
+            pass
+        
+        # Проверка по наличию контейнера редактора кода или кнопок запуска кода
+        try:
+            # Ищем контейнеры, которые обычно содержат редактор кода
+            code_container = task_form.find_elements(By.CSS_SELECTOR, ".CodeEditor_root, .CodeEditor_container, [class*='CodeEditor'], [class*='CodeMirror']")
+            if code_container:
+                print("  Тип задачи: CODE (написание кода) - найден контейнер редактора кода")
+                return "code"
+        except:
+            pass
+        
+        # Дополнительная проверка: ищем CodeMirror в документе целиком (не только в форме)
+        try:
+            cm_editor = driver.find_element(By.CSS_SELECTOR, ".cm-editor")
+            if cm_editor:
+                print("  Тип задачи: CODE (написание кода) - найден CodeMirror редактор в документе")
+                return "code"
+        except:
+            pass
+        
+        # Отладочная информация: выводим что было найдено
+        try:
+            print(f"  [DEBUG] Проверка элементов для определения типа задачи:")
+            print(f"    - Checkboxes: {len(task_form.find_elements(By.CSS_SELECTOR, 'input[type=\"checkbox\"]'))}")
+            print(f"    - Radios: {len(task_form.find_elements(By.CSS_SELECTOR, 'input[type=\"radio\"]'))}")
+            print(f"    - Draggable: {len(task_form.find_elements(By.CSS_SELECTOR, '[draggable=\"true\"]'))}")
+            print(f"    - Link rows: {len(task_form.find_elements(By.CSS_SELECTOR, '.LinkTaskRow_linkRow__36TU1'))}")
+            print(f"    - CodeMirror в форме: {len(task_form.find_elements(By.CSS_SELECTOR, '.cm-editor'))}")
+            print(f"    - CodeMirror в документе: {len(driver.find_elements(By.CSS_SELECTOR, '.cm-editor'))}")
+            print(f"    - Textarea с source_code: {len(task_form.find_elements(By.CSS_SELECTOR, 'textarea[name*=\"source_code\"]'))}")
         except:
             pass
         
@@ -2768,6 +2846,31 @@ def handle_task(driver, task_answer=None):
         # Определяем тип задачи
         task_type = detect_task_type(driver)
         
+        # Если задача уже решена, просто переходим к следующей
+        if task_type == "solved":
+            print("  ✓ Задача уже решена, переходим к следующей")
+            # Пытаемся найти кнопку "Дальше" или "Next" для перехода к следующей задаче
+            try:
+                next_button = WebDriverWait(driver, 2).until(
+                    EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Дальше') or contains(text(), 'Next')]"))
+                )
+                next_button.click()
+                time.sleep(1.5)  # Ждем перехода к следующей задаче
+                return True
+            except:
+                # Если кнопки нет, возможно это последняя задача или нужно вернуться на страницу задач
+                # Проверяем, есть ли кнопка возврата или мы уже на странице задач
+                try:
+                    # Пробуем найти любую кнопку навигации
+                    nav_button = driver.find_element(By.XPATH, "//button[contains(@class, 'button') or contains(@class, 'btn')]")
+                    if nav_button:
+                        nav_button.click()
+                        time.sleep(1)
+                except:
+                    pass
+                # Возвращаем True (задача уже решена, можно продолжать)
+                return True
+        
         if task_type == "unknown":
             print("  ⚠ Не удалось определить тип задачи, пропускаем")
             return False
@@ -3696,31 +3799,24 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
             print(f"  [DEBUG] Предыдущий ID задачи: {previous_task_id}")
             print(f"  [DEBUG] Обработанные ID задач: {processed_task_ids}")
             
-            # ВРЕМЕННО ОТКЛЮЧЕНО: Проверка зацикливания
             # Проверяем, не обработали ли мы уже эту задачу
-            # if current_task_id and current_task_id in processed_task_ids:
-            #     print(f"\n  ⚠ ВНИМАНИЕ: Задача с ID {current_task_id} уже была обработана!")
-            #     print(f"  Пропускаем эту задачу и переходим к следующей.")
-            #     # Обновляем previous_url и увеличиваем task_index
-            #     previous_url = current_url
-            #     task_index += 1
-            #     continue
-            
-            # ВРЕМЕННО ОТКЛЮЧЕНО: Проверка зацикливания
-            # Проверяем зацикливание: сравниваем ID задач, если они есть
-            # if previous_url is not None and task_index > 0:
-            #     if current_task_id and previous_task_id:
-            #         # Если ID задач одинаковые, значит мы на той же задаче
-            #         if current_task_id == previous_task_id:
-            #             print(f"\n  ⚠ ВНИМАНИЕ: ID задачи не изменился после предыдущей задачи!")
-            #             print(f"  Текущий URL: {current_url}")
-            #             print(f"  Предыдущий URL: {previous_url}")
-            #             print(f"  ID задачи: {current_task_id}")
-            #             print(f"  Возможно, мы зациклились. Пропускаем эту задачу и переходим к следующей.")
-            #             # Обновляем previous_url перед переходом к следующей задаче
-            #             previous_url = current_url
-            #             task_index += 1
-            #             continue
+            # Это должно быть ПЕРВОЙ проверкой, чтобы не обрабатывать одну задачу дважды
+            # НО: если мы только что перешли на эту задачу (previous_task_id != current_task_id), это нормально
+            if current_task_id and current_task_id in processed_task_ids:
+                # Проверяем, действительно ли мы застряли на этой задаче
+                # Если previous_task_id == current_task_id, значит мы обрабатываем одну и ту же задачу дважды
+                if previous_task_id and previous_task_id == current_task_id:
+                    # Мы действительно застряли на одной задаче - пропускаем её и переходим к следующей
+                    print(f"\n  ⚠ Задача {current_task_id} уже была обработана, пропускаем её и переходим к следующей.")
+                    # Просто увеличиваем индекс и продолжаем - не пытаемся перейти дальше
+                    previous_url = current_url
+                    task_index += 1
+                    continue
+                else:
+                    # Это нормальная ситуация - мы перешли на новую задачу, которая уже была обработана ранее
+                    # Продолжаем обработку (не пропускаем задачу)
+                    print(f"  [DEBUG] Задача {current_task_id} уже была обработана, но мы перешли на неё с другой задачи - продолжаем")
+                    pass
             #     elif current_url == previous_url:
             #         # Если ID задач нет, сравниваем полный URL
             #         print(f"\n  ⚠ ВНИМАНИЕ: URL не изменился после предыдущей задачи!")
@@ -3754,12 +3850,19 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
                 if description and description != 'nan':
                     print(f"  Описание: {description}")
             
-            # Сначала получаем ответ из Excel для проверки типа задачи
-            answer_text = str(task_data[answer_column]).strip()
-            
-            # Определяем тип задачи на странице
+            # Определяем тип задачи на странице ПЕРЕД извлечением ответа
             print("\n  Определяем тип задачи на странице...")
             task_type = detect_task_type(driver)
+            
+            # Только после определения типа задачи извлекаем ответ из Excel
+            # Это гарантирует, что мы используем правильный ответ для текущей задачи
+            answer_text = str(task_data[answer_column]).strip()
+            
+            # Отладочная информация: выводим какой ответ используется для текущей задачи
+            print(f"\n  [DEBUG] Задача {task_index + 1}/{len(homework_tasks)}")
+            print(f"  [DEBUG] task_index = {task_index}")
+            print(f"  [DEBUG] Ответ из Excel для этой задачи: '{answer_text[:100]}...' (первые 100 символов)")
+            print(f"  [DEBUG] Тип задачи: {task_type}")
             
             # Проверяем ответ из Excel - если это список/массив, это должна быть checkbox задача
             # Это важно, так как некоторые страницы могут иметь и radio и checkbox элементы
@@ -3777,8 +3880,132 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
                 except:
                     pass
             
+            # Обрабатываем решенные задачи
+            if task_type == "solved":
+                print("  ✓ Задача уже решена, переходим к следующей")
+                # Увеличиваем task_index ПЕРЕД переходом, чтобы использовать правильный ответ из Excel для следующей задачи
+                task_index += 1
+                print(f"  [DEBUG] Увеличен task_index до {task_index} (задача уже решена, переходим к следующей)")
+                
+                # Проверяем, не вышли ли мы за пределы списка задач
+                if task_index >= len(homework_tasks):
+                    print(f"  ✓ Все задачи обработаны")
+                    return "homework_completed"
+                
+                # Обновляем task_data для следующей задачи ПЕРЕД переходом
+                task_data = homework_tasks.iloc[task_index]
+                print(f"  [DEBUG] Обновлен task_data для задачи {task_index + 1}, ответ: '{str(task_data[answer_column])[:100]}...'")
+                
+                try:
+                    wait = WebDriverWait(driver, 2)
+                    next_button = wait.until(EC.element_to_be_clickable((
+                        By.CSS_SELECTOR,
+                        ".styled__ButtonNext-qDZv, a.styled__Root-ebtVmd, a.fox-Anchor.styled__Root-ebtVmd, button[type='submit'], button[class*='Button']"
+                    )))
+                    print("  Нажимаем 'Дальше'...")
+                    url_before_next = driver.current_url
+                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", next_button)
+                    time.sleep(0.2)
+                    try:
+                        next_button.click()
+                    except:
+                        driver.execute_script("arguments[0].click();", next_button)
+                    print("  ✓ Переход к следующей задаче")
+                    time.sleep(1.5)
+                    
+                    # Проверяем, что URL изменился
+                    url_after_next = driver.current_url
+                    if url_before_next != url_after_next:
+                        print(f"  ✓ Переход подтвержден (URL изменился: {url_before_next} -> {url_after_next})")
+                        previous_url = url_after_next
+                        # task_index уже увеличен выше
+                    else:
+                        # URL не изменился - проверяем, что это означает
+                        if "/tasks" not in url_after_next:
+                            print(f"  ✓ Похоже, мы вернулись на страницу курса - все задачи выполнены")
+                            return "homework_completed"
+                        else:
+                            # URL не изменился, но мы все еще на странице задач - это последняя задача или зацикливание
+                            print(f"  ⚠ URL не изменился после нажатия 'Дальше' - возможно, это последняя задача")
+                            print(f"  Возвращаемся на страницу курса")
+                            # Извлекаем базовый URL курса из текущего URL
+                            match = re.search(r'(https://kb\.cifrium\.ru/teacher/courses/\d+)', url_after_next)
+                            if match:
+                                course_base_url = match.group(1)
+                                driver.get(course_base_url)
+                            else:
+                                # Пробуем извлечь из lesson URL
+                                match = re.search(r'(https://kb\.cifrium\.ru/teacher/lessons/\d+)', url_after_next)
+                                if match:
+                                    lesson_url = match.group(1)
+                                    # Удаляем /tasks из URL если есть
+                                    if '/tasks' in lesson_url:
+                                        lesson_url = lesson_url.replace('/tasks', '')
+                                    # Извлекаем course_id из lesson_id
+                                    lesson_match = re.search(r'/lessons/(\d+)', lesson_url)
+                                    if lesson_match:
+                                        # Возвращаемся на страницу курса (нужно знать course_id)
+                                        # Пока просто возвращаем homework_completed
+                                        return "homework_completed"
+                            time.sleep(2)
+                            return "homework_completed"
+                    continue
+                except Exception as e:
+                    print(f"  ⚠ Не удалось найти кнопку перехода: {e}")
+                    previous_url = driver.current_url
+                    task_index += 1
+                    continue
+            
             if task_type == "unknown":
                 print("  ⚠ Не удалось определить тип задачи")
+                # Дополнительная проверка: может быть задача уже решена (HTML изменился)
+                try:
+                    task_form = get_task_form(driver)
+                    # Проверяем наличие элементов Solved более тщательно
+                    solved_elements = task_form.find_elements(By.XPATH, ".//*[contains(@class, 'Solved') or contains(text(), 'Правильный ответ') or contains(text(), 'Ваш ответ')]")
+                    if solved_elements:
+                        print("  ✓ Задача уже решена (найдены элементы Solved при дополнительной проверке)")
+                        # Пытаемся найти кнопку "Дальше"
+                        try:
+                            wait = WebDriverWait(driver, 2)
+                            next_button = wait.until(EC.element_to_be_clickable((
+                                By.CSS_SELECTOR,
+                                ".styled__ButtonNext-qDZv, a.styled__Root-ebtVmd, a.fox-Anchor.styled__Root-ebtVmd, button[type='submit'], button[class*='Button']"
+                            )))
+                            print("  Нажимаем 'Дальше'...")
+                            url_before_next = driver.current_url
+                            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", next_button)
+                            time.sleep(0.2)
+                            try:
+                                next_button.click()
+                            except:
+                                driver.execute_script("arguments[0].click();", next_button)
+                            print("  ✓ Переход к следующей задаче")
+                            time.sleep(1.5)
+                            
+                            url_after_next = driver.current_url
+                            if url_before_next != url_after_next:
+                                print(f"  ✓ Переход подтвержден (URL изменился: {url_before_next} -> {url_after_next})")
+                                previous_url = url_after_next
+                                task_index += 1
+                            else:
+                                # URL не изменился - это последняя задача
+                                print(f"  ⚠ URL не изменился после нажатия 'Дальше' - возможно, это последняя задача")
+                                print(f"  Возвращаемся на страницу курса")
+                                match = re.search(r'(https://kb\.cifrium\.ru/teacher/courses/\d+)', url_after_next)
+                                if match:
+                                    course_base_url = match.group(1)
+                                    driver.get(course_base_url)
+                                else:
+                                    return "homework_completed"
+                                time.sleep(2)
+                                return "homework_completed"
+                            continue
+                        except:
+                            pass
+                except:
+                    pass
+                
                 # Проверяем, может быть задача уже решена и есть кнопка "Дальше"
                 try:
                     wait = WebDriverWait(driver, 1)  # Уменьшено время ожидания до 1 секунды
@@ -3800,7 +4027,7 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
                     # Проверяем, действительно ли мы перешли на новую задачу
                     url_after_next = driver.current_url
                     if url_before_next != url_after_next:
-                        print(f"  ✓ Переход подтвержден (URL изменился)")
+                        print(f"  ✓ Переход подтвержден (URL изменился: {url_before_next} -> {url_after_next})")
                         previous_url = url_after_next
                         task_index += 1
                     else:
@@ -3809,10 +4036,22 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
                             print(f"  ✓ Похоже, мы вернулись на страницу курса - все задачи выполнены")
                             return "homework_completed"
                         else:
-                            print(f"  ⚠ URL не изменился, но мы все еще на странице задач")
-                            print(f"  Увеличиваем индекс чтобы избежать зацикливания")
-                            previous_url = url_after_next
-                            task_index += 1
+                            # URL не изменился, но мы все еще на странице задач - это последняя задача
+                            print(f"  ⚠ URL не изменился после нажатия 'Дальше' - возможно, это последняя задача")
+                            print(f"  Возвращаемся на страницу курса")
+                            match = re.search(r'(https://kb\.cifrium\.ru/teacher/courses/\d+)', url_after_next)
+                            if match:
+                                course_base_url = match.group(1)
+                                driver.get(course_base_url)
+                            else:
+                                # Пробуем извлечь из lesson URL
+                                match = re.search(r'(https://kb\.cifrium\.ru/teacher/lessons/\d+)', url_after_next)
+                                if match:
+                                    lesson_url = match.group(1).replace('/tasks', '')
+                                    # Возвращаемся на страницу курса
+                                    return "homework_completed"
+                            time.sleep(2)
+                            return "homework_completed"
                     continue
                 except:
                     print("  ⚠ Задача не решена и тип не определен, пропускаем")
@@ -3945,16 +4184,8 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
                     # Обновляем previous_url и увеличиваем индекс, чтобы избежать зацикливания
                     previous_url = driver.current_url
                     
-                    # Извлекаем task_id и добавляем в processed_task_ids, чтобы избежать зацикливания
-                    current_task_id = None
-                    try:
-                        match = re.search(r'/tasks/(\d+)', driver.current_url)
-                        if match:
-                            current_task_id = match.group(1)
-                            processed_task_ids.add(current_task_id)
-                            print(f"  [DEBUG] Добавлен task_id {current_task_id} в processed_task_ids для избежания зацикливания")
-                    except:
-                        pass
+                    # НЕ добавляем задачу в processed_task_ids здесь - она будет добавлена после успешной обработки
+                    # Это предотвращает ложные срабатывания проверки зацикливания
                     
                     # Проверяем, не зациклились ли мы на той же задаче
                     if current_task_id and current_task_id in processed_task_ids:
@@ -4008,6 +4239,8 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
             
             elif task_type == "text":
                 print("  Обрабатываем text задачу...")
+                print(f"  [DEBUG] Используем ответ для text задачи: '{answer_text[:100]}...' (первые 100 символов)")
+                print(f"  [DEBUG] task_index = {task_index}, task_data[answer_column] = '{str(task_data[answer_column])[:100]}...'")
                 task_answer = answer_text
             
             # Обрабатываем задачу
@@ -4025,6 +4258,11 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
                     return "homework_completed"
                 elif result:
                     print(f"  ✓ Задача {task_index + 1} обработана успешно")
+                    
+                    # Увеличиваем task_index сразу после успешной обработки задачи
+                    # Это гарантирует, что следующая итерация будет использовать правильный ответ из Excel
+                    task_index += 1
+                    print(f"  [DEBUG] Увеличен task_index до {task_index} после успешной обработки задачи")
                     
                     # Проверяем, действительно ли мы перешли на новую задачу
                     time.sleep(2)  # Ждем загрузки следующей страницы
@@ -4055,8 +4293,8 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
                             processed_task_ids.add(task_id_before)
                             previous_url = url_after  # Обновляем previous_url
                             print(f"  [DEBUG] Обновлен previous_url: {previous_url}")
-                            task_index += 1
-                            print(f"  [DEBUG] Увеличен task_index до: {task_index}")
+                            # task_index уже увеличен выше после успешной обработки задачи
+                            print(f"  [DEBUG] task_index уже увеличен до: {task_index}")
                         elif not task_id_before and task_id_after:
                             # Перешли с главной страницы на страницу задачи - это нормально
                             # Это означает, что мы обработали первую задачу из списка и перешли на её страницу
@@ -4064,13 +4302,11 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
                             print(f"  [DEBUG] URL до: {url_before}")
                             print(f"  [DEBUG] URL после: {url_after}")
                             print(f"  [DEBUG] ID задачи: {task_id_after}")
-                            # Добавляем текущую задачу в список обработанных
-                            processed_task_ids.add(task_id_after)
+                            # НЕ добавляем задачу в processed_task_ids здесь - она будет добавлена после обработки
                             previous_url = url_after  # Обновляем previous_url
                             print(f"  [DEBUG] Обновлен previous_url: {previous_url}")
-                            # Увеличиваем task_index, потому что мы обработали задачу из списка
-                            task_index += 1
-                            print(f"  [DEBUG] Увеличен task_index до: {task_index} (первая задача обработана)")
+                            # НЕ увеличиваем task_index - мы еще не обработали эту задачу, только перешли на неё
+                            print(f"  [DEBUG] Продолжаем обработку задачи {task_id_after}")
                         else:
                             # URL изменился, но ID задачи тот же - странно, но продолжаем
                             print(f"  ⚠ URL изменился, но ID задачи остался тем же")
