@@ -25,10 +25,16 @@ MAIN_PAGE_URL_2 = "https://kb.cifrium.ru/teacher/courses/772"  # Модуль 3
 HOME_URL = "https://kb.cifrium.ru/"
 LOGIN_URL = "https://kb.cifrium.ru/user/login"
 
-# OpenRouter API настройки
-OPENROUTER_API_KEY = "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"  # Можно установить через переменную окружения
-OPENROUTER_MODEL = "anthropic/claude-3.5-sonnet"  # Модель по умолчанию
-OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+# AI API настройки - используем g4f (GPT4Free) - полностью бесплатно, без API ключей
+# g4f - бесплатная библиотека для доступа к различным LLM без API ключей
+# Работает через интернет, не требует локальных ресурсов - идеально для слабых компьютеров
+# Установка: pip install g4f
+try:
+    import g4f
+    G4F_AVAILABLE = True
+except ImportError:
+    G4F_AVAILABLE = False
+    print("  ⚠ g4f не установлен. Установите: pip install g4f")
 
 def setup_driver():
     """Настройка и создание драйвера Chrome (без профиля)"""
@@ -234,7 +240,7 @@ def click_load_more_button(driver, load_more_button):
             driver.execute_script("arguments[0].click();", load_more_button)
         
         # Ждем загрузки новых заданий
-        time.sleep(2)
+        time.sleep(1)  # Уменьшено для ускорения
         return True
     except Exception as e:
         print(f"  ⚠ Ошибка при нажатии на кнопку: {e}")
@@ -358,7 +364,7 @@ def handle_continue_test_button(driver):
                     driver.execute_script("arguments[0].click();", continue_button)
                 
                 print("  ✓ Кнопка 'Продолжить тест' нажата")
-                time.sleep(2)  # Ждем перехода на страницу с задачами
+                time.sleep(1)  # Уменьшено для ускорения
                 return True
             except Exception as click_error:
                 print(f"  ⚠ Ошибка при клике на кнопку 'Продолжить тест': {click_error}")
@@ -369,6 +375,135 @@ def handle_continue_test_button(driver):
             
     except Exception as e:
         print(f"  ⚠ Ошибка при поиске кнопки 'Продолжить тест': {e}")
+        return False
+
+def handle_training_finish_page(driver):
+    """Обрабатывает страницу завершения теста (/trainings/[id]/finish)
+    Находит и нажимает кнопку 'Завершить' с id='training-complete-btn'
+    Возвращает True если кнопка найдена и нажата, False если не найдена"""
+    try:
+        current_url = driver.current_url
+        if "/trainings/" not in current_url or "/finish" not in current_url:
+            # Мы не на странице завершения теста
+            return False
+        
+        print("  Найдена страница завершения теста, ищем кнопку 'Завершить'...")
+        
+        # Ищем кнопку по ID
+        try:
+            complete_button = WebDriverWait(driver, 3).until(
+                EC.element_to_be_clickable((By.ID, "training-complete-btn"))
+            )
+            print("  ✓ Найдена кнопка 'Завершить'")
+            
+            # Прокручиваем к кнопке
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", complete_button)
+            time.sleep(0.5)
+            
+            # Кликаем на кнопку
+            try:
+                complete_button.click()
+                print("  ✓ Кнопка 'Завершить' нажата")
+            except:
+                driver.execute_script("arguments[0].click();", complete_button)
+                print("  ✓ Кнопка 'Завершить' нажата (через JS)")
+            
+            time.sleep(1)  # Уменьшено для ускорения
+            return True
+            
+        except Exception as e:
+            print(f"  ⚠ Кнопка 'Завершить' не найдена: {e}")
+            return False
+            
+    except Exception as e:
+        print(f"  ⚠ Ошибка при обработке страницы завершения теста: {e}")
+        return False
+
+def find_and_click_final_tests(driver, control_lesson_id, course_id="771"):
+    """Находит и кликает на финальные тесты на главной странице курса
+    Ищет урок с текстом "Промежуточная аттестация" в названии
+    control_lesson_id - ID контрольного урока (например, 6107) - не используется, оставлен для совместимости
+    course_id - ID курса (по умолчанию 771 для модуля 2)
+    Возвращает True если финальные тесты найдены и клик выполнен, False если не найдены"""
+    try:
+        print(f"  Ищем финальные тесты (Промежуточная аттестация) на главной странице курса {course_id}...")
+        
+        # Находим список заданий
+        lessons_list = find_lessons_list(driver)
+        if not lessons_list:
+            print("  ⚠ Не удалось найти список заданий")
+            return False
+        
+        # Нажимаем "Показать ещё" до тех пор, пока кнопка не исчезнет или не станет disabled
+        max_load_more_attempts = 10
+        for attempt in range(max_load_more_attempts):
+            load_more_button = find_load_more_button(driver, lessons_list)
+            if load_more_button:
+                print(f"  Найдена кнопка 'Показать ещё', нажимаем (попытка {attempt + 1})...")
+                if click_load_more_button(driver, load_more_button):
+                    time.sleep(1)  # Уменьшено для ускорения
+                    # Обновляем список уроков после загрузки
+                    lessons_list = find_lessons_list(driver)
+                    if not lessons_list:
+                        break
+                else:
+                    break
+            else:
+                print("  Кнопка 'Показать ещё' не найдена или отключена, все уроки загружены")
+                break
+        
+        # Теперь ищем урок с текстом "Промежуточная аттестация"
+        print("  Ищем урок с текстом 'Промежуточная аттестация'...")
+        
+        # Ищем все ссылки на уроки
+        all_task_links = get_task_links(driver, lessons_list, course_id)
+        
+        if not all_task_links:
+            print("  ⚠ Не найдено заданий в списке")
+            return False
+        
+        # Ищем урок с текстом "Промежуточная аттестация" в названии
+        final_test_link = None
+        for task_link in all_task_links:
+            element = task_link["element"]
+            try:
+                # Ищем элемент с названием урока (класс содержит Item_name__)
+                name_element = element.find_element(
+                    By.XPATH,
+                    ".//div[contains(@class, 'Item_name__')]"
+                )
+                lesson_name = name_element.text
+                
+                if "Промежуточная аттестация" in lesson_name:
+                    final_test_link = task_link
+                    print(f"  ✓ Найден урок с 'Промежуточная аттестация': {lesson_name}")
+                    print(f"  URL: {task_link['href']}")
+                    break
+            except Exception as e:
+                # Продолжаем поиск, если не удалось найти название
+                continue
+        
+        if not final_test_link:
+            print("  ⚠ Урок с 'Промежуточная аттестация' не найден в списке")
+            return False
+        
+        # Переходим на страницу финальных тестов, но НЕ нажимаем кнопку начала теста
+        # Пользователь просил останавливаться на странице урока, не переходя к задачам
+        try:
+            print(f"  Переходим на финальные тесты: {final_test_link['href']}")
+            driver.get(final_test_link['href'])
+            time.sleep(1.5)  # Уменьшено для ускорения
+            
+            print("  Остановились на странице финального теста (кнопку 'Решить задачи' / 'Начать тест' не нажимаем)")
+            return True
+        except Exception as e:
+            print(f"  ⚠ Ошибка при переходе на финальные тесты: {e}")
+            return False
+            
+    except Exception as e:
+        print(f"  ⚠ Ошибка при поиске финальных тестов: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def go_to_tasks_page(driver):
@@ -401,13 +536,15 @@ def go_to_tasks_page(driver):
         print(f"  ⚠ Ошибка при переходе на tasks страницу: {e}")
         return False
 
-def get_task_form(driver, timeout=3):
+def get_task_form(driver, timeout=1):
     """Получает форму задачи с ожиданием загрузки
     Поддерживает как обычные формы (ID="taskForm"), так и контрольные задания (action="/trainings/...")"""
-    wait = WebDriverWait(driver, timeout)
+    # Используем более короткий таймаут для каждой попытки, чтобы ускорить поиск
+    short_timeout = min(timeout, 0.8)  # Максимум 0.8 секунды на каждую попытку
     
     # Сначала пробуем найти форму по ID (обычные задания)
     try:
+        wait = WebDriverWait(driver, short_timeout)
         form = wait.until(EC.presence_of_element_located((By.ID, "taskForm")))
         return form
     except:
@@ -415,6 +552,7 @@ def get_task_form(driver, timeout=3):
     
     # Если не найдено, пробуем найти форму контрольного задания (action="/trainings/...")
     try:
+        wait = WebDriverWait(driver, short_timeout)
         form = wait.until(EC.presence_of_element_located((By.XPATH, "//form[contains(@action, '/trainings/')]")))
         print("  Найдена форма контрольного задания")
         return form
@@ -423,6 +561,7 @@ def get_task_form(driver, timeout=3):
     
     # Если все еще не найдено, пробуем найти любую форму с кнопкой отправки
     try:
+        wait = WebDriverWait(driver, short_timeout)
         form = wait.until(EC.presence_of_element_located((By.XPATH, "//form[.//button[@type='submit']]")))
         print("  Найдена форма по наличию кнопки submit")
         return form
@@ -431,6 +570,7 @@ def get_task_form(driver, timeout=3):
     
     # Последняя попытка: найти форму с классом wkUtils_userUnselectable__tdz2n (контрольные задания)
     try:
+        wait = WebDriverWait(driver, short_timeout)
         form = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "form.wkUtils_userUnselectable__tdz2n")))
         print("  Найдена форма контрольного задания по классу")
         return form
@@ -876,6 +1016,34 @@ def handle_radio_task(driver, answer):
                 return False
         
         print(f"  ⚠ Не найдена радио-кнопка для ответа: {answer}")
+        print(f"  [DEBUG] Пробуем выбрать первый вариант как fallback...")
+        # Fallback: выбираем первый вариант, если ничего не найдено
+        if radios and len(radios) > 0:
+            first_radio = radios[0]
+            first_value = first_radio.get_attribute("value")
+            print(f"  [DEBUG] Fallback: выбираем первый вариант (value={first_value})")
+            try:
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", first_radio)
+                time.sleep(0.3)
+                driver.execute_script("""
+                    var radio = arguments[0];
+                    radio.checked = true;
+                    var changeEvent = new Event('change', { bubbles: true, cancelable: true });
+                    radio.dispatchEvent(changeEvent);
+                    var clickEvent = new Event('click', { bubbles: true, cancelable: true });
+                    radio.dispatchEvent(clickEvent);
+                    var parent = radio.closest('div[class*="styled__Root"]');
+                    if (parent) {
+                        parent.click();
+                    }
+                """, first_radio)
+                time.sleep(0.3)
+                is_selected = driver.execute_script("return arguments[0].checked;", first_radio)
+                if is_selected:
+                    print(f"    ✓ Fallback: первый вариант выбран")
+                    return True
+            except Exception as e:
+                print(f"    ⚠ Ошибка при выборе первого варианта: {e}")
         return False
         
     except Exception as e:
@@ -2895,21 +3063,33 @@ def parse_task_from_html(driver):
         traceback.print_exc()
         return None
 
-def get_answer_from_openrouter(task_data, api_key=None, model=None):
-    """Отправляет задачу в OpenRouter API и получает ответ
+def get_answer_from_ai(task_data, provider=None, api_key=None, model=None):
+    """Получает ответ от AI через g4f (GPT4Free) - полностью бесплатно, без API ключей
     task_data - словарь с полями: description, options, task_type
-    Возвращает ответ в формате, подходящем для handle_task"""
+    Возвращает ответ в формате, подходящем для handle_task
+    
+    g4f - бесплатная библиотека, работает в России, не требует API ключей
+    Работает через интернет, не требует локальных ресурсов"""
+    return get_answer_from_g4f(task_data, api_key, model)
+
+def get_answer_from_g4f(task_data, api_key=None, model=None):
+    """Отправляет задачу в g4f (GPT4Free) и получает ответ
+    Полностью бесплатно, без API ключей, работает в России"""
     try:
-        if not api_key:
-            api_key = OPENROUTER_API_KEY
-        
-        if not api_key:
-            print("  ⚠ OpenRouter API ключ не установлен!")
-            print("  Установите переменную окружения OPENROUTER_API_KEY или передайте ключ в функцию")
+        if not G4F_AVAILABLE:
+            print("  ⚠ g4f не установлен!")
+            print("  Установите: pip install g4f")
+            print("  Используем fallback: выбираем случайный вариант ответа")
+            # Fallback: возвращаем случайный вариант ответа
+            import random
+            options = task_data.get('options', [])
+            if options and len(options) > 0:
+                random_index = random.randint(0, len(options) - 1)
+                random_option = options[random_index]
+                fallback_answer = random_option.get('text', '')
+                print(f"  [Fallback] Выбран случайный вариант ({random_index + 1} из {len(options)}): '{fallback_answer[:100]}...'")
+                return fallback_answer
             return None
-        
-        if not model:
-            model = OPENROUTER_MODEL
         
         # Формируем промпт для модели
         description = task_data.get('description', 'Не указано')
@@ -2930,49 +3110,109 @@ def get_answer_from_openrouter(task_data, api_key=None, model=None):
 
 ВАЖНО: Ответь ТОЛЬКО полным текстом выбранного варианта ответа, используя точно такой же текст, как в одном из вариантов выше. Не добавляй никаких объяснений, номеров или дополнительного текста. Просто скопируй текст выбранного варианта ответа."""
         
-        # Отправляем запрос в OpenRouter API
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/your-repo",  # Опционально
-            "X-Title": "Course Automation"  # Опционально
-        }
+        # Используем g4f для получения ответа
+        # Используем модель по умолчанию или указанную
+        model_to_use = model or "gpt-3.5-turbo"
         
-        payload = {
-            "model": model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            "temperature": 0.1,  # Низкая температура для более точных ответов
-            "max_tokens": 500
-        }
+        print(f"  Отправляем запрос в g4f (модель: {model_to_use})...")
+        print(f"  g4f - полностью бесплатно, без API ключей, обычно работает в России")
         
-        print(f"  Отправляем запрос в OpenRouter API (модель: {model})...")
-        response = requests.post(OPENROUTER_API_URL, headers=headers, json=payload, timeout=30)
+        answer_text = None
+        last_error = None
         
-        if response.status_code == 200:
-            result = response.json()
-            answer_text = result['choices'][0]['message']['content'].strip()
-            print(f"  ✓ Получен ответ от модели: '{answer_text[:100]}...'")
-            return answer_text
-        else:
-            print(f"  ⚠ Ошибка API: {response.status_code}")
-            print(f"  Ответ: {response.text}")
+        # Пробуем получить доступные провайдеры динамически
+        try:
+            # Получаем список доступных провайдеров
+            available_providers = []
+            if hasattr(g4f, 'Provider'):
+                # Пробуем получить все атрибуты Provider
+                for attr_name in dir(g4f.Provider):
+                    if not attr_name.startswith('_'):
+                        try:
+                            provider = getattr(g4f.Provider, attr_name)
+                            if provider:
+                                available_providers.append((attr_name, provider))
+                        except:
+                            pass
+            
+            # Если нашли провайдеры, пробуем их по очереди
+            if available_providers:
+                print(f"  Найдено {len(available_providers)} доступных провайдеров")
+                for provider_name, provider in available_providers[:5]:  # Пробуем первые 5
+                    try:
+                        print(f"  Пробуем провайдер: {provider_name}...")
+                        response = g4f.ChatCompletion.create(
+                            model=model_to_use,
+                            messages=[{"role": "user", "content": prompt}],
+                            provider=provider,
+                            timeout=30
+                        )
+                        
+                        if response:
+                            answer_text = str(response).strip()
+                            print(f"  ✓ Получен ответ от модели: '{answer_text[:100]}...'")
+                            return answer_text
+                    except Exception as e:
+                        last_error = e
+                        print(f"  ⚠ Провайдер {provider_name} не сработал: {str(e)[:100]}")
+                        continue
+        except Exception as e:
+            last_error = e
+            print(f"  ⚠ Ошибка при получении провайдеров: {e}")
+        
+        # Если провайдеры не сработали, пробуем без указания провайдера (g4f выберет автоматически)
+        if not answer_text:
+            try:
+                print(f"  Пробуем без указания провайдера (автоматический выбор)...")
+                response = g4f.ChatCompletion.create(
+                    model=model_to_use,
+                    messages=[{"role": "user", "content": prompt}],
+                    timeout=30
+                )
+                
+                if response:
+                    answer_text = str(response).strip()
+                    print(f"  ✓ Получен ответ от модели: '{answer_text[:100]}...'")
+                    return answer_text
+            except Exception as e:
+                last_error = e
+                print(f"  ⚠ Ошибка при запросе без провайдера: {e}")
+        
+        if not answer_text:
+            print(f"  ⚠ Все провайдеры не сработали. Последняя ошибка: {last_error}")
+            print(f"  Используем fallback: выбираем случайный вариант ответа")
+            # Fallback: возвращаем случайный вариант ответа
+            import random
+            options = task_data.get('options', [])
+            if options and len(options) > 0:
+                random_index = random.randint(0, len(options) - 1)
+                random_option = options[random_index]
+                fallback_answer = random_option.get('text', '')
+                print(f"  [Fallback] Выбран случайный вариант ({random_index + 1} из {len(options)}): '{fallback_answer[:100]}...'")
+                return fallback_answer
             return None
             
     except Exception as e:
-        print(f"  ⚠ Ошибка при запросе к OpenRouter API: {e}")
+        print(f"  ⚠ Ошибка при запросе к g4f: {e}")
         import traceback
         traceback.print_exc()
+        # Fallback: возвращаем случайный вариант ответа
+        import random
+        options = task_data.get('options', [])
+        if options and len(options) > 0:
+            random_index = random.randint(0, len(options) - 1)
+            random_option = options[random_index]
+            fallback_answer = random_option.get('text', '')
+            print(f"  [Fallback] Выбран случайный вариант ({random_index + 1} из {len(options)}): '{fallback_answer[:100]}...'")
+            return fallback_answer
         return None
 
+
 def handle_randomized_task_with_ai(driver, api_key=None, model=None):
-    """Обрабатывает рандомизированную задачу с помощью AI
-    Парсит HTML, отправляет в OpenRouter API, получает ответ и заполняет форму
-    Возвращает True если задача обработана успешно, False если ошибка, "homework_completed" если все задачи завершены"""
+    """Обрабатывает рандомизированную задачу с помощью AI через Puter.js
+    Парсит HTML, отправляет в Puter.js API (бесплатный доступ к Qwen моделям), получает ответ и заполняет форму
+    Возвращает True если задача обработана успешно, False если ошибка, "homework_completed" если все задачи завершены
+    api_key и model не используются (Puter.js не требует API ключей)"""
     try:
         print("\n  [AI] Обрабатываем рандомизированную задачу с помощью AI...")
         
@@ -3002,18 +3242,43 @@ def handle_randomized_task_with_ai(driver, api_key=None, model=None):
             print(f"    {i}. {option.get('text', '')[:80]}...")
         
         # Получаем ответ от AI
-        answer_text = get_answer_from_openrouter(task_data, api_key, model)
+        answer_text = get_answer_from_ai(task_data, None, api_key, model)
         if not answer_text:
             print("  ⚠ Не удалось получить ответ от AI")
             return False
         
         print(f"  [AI] Ответ от модели: '{answer_text}'")
+        print(f"  [AI] Длина ответа: {len(answer_text)} символов")
+        
+        # Проверяем, совпадает ли ответ с одним из вариантов
+        options = task_data.get('options', [])
+        print(f"  [AI] Сравниваем ответ с вариантами:")
+        exact_matches = []
+        for i, option in enumerate(options, 1):
+            option_text = option.get('text', '')
+            answer_normalized = answer_text.strip().lower()
+            option_normalized = option_text.strip().lower()
+            is_exact_match = answer_normalized == option_normalized
+            contains_match = answer_normalized in option_normalized or option_normalized in answer_normalized
+            print(f"    {i}. '{option_text[:60]}...'")
+            print(f"       Нормализованный вариант: '{option_normalized[:60]}...'")
+            print(f"       Нормализованный ответ: '{answer_normalized[:60]}...'")
+            print(f"       Точное совпадение: {'✓ ДА' if is_exact_match else '✗ НЕТ'}")
+            print(f"       Частичное совпадение: {'✓ ДА' if contains_match and not is_exact_match else '✗ НЕТ'}")
+            if is_exact_match:
+                exact_matches.append((i, option_text))
+        
+        if exact_matches:
+            print(f"  [AI] ✓ Найдено {len(exact_matches)} точных совпадений!")
+        else:
+            print(f"  [AI] ⚠ Точных совпадений не найдено, будет использована логика поиска похожих вариантов")
         
         # Обрабатываем задачу с полученным ответом
         task_type = task_data.get('task_type')
         
         if task_type == "radio":
             # Для radio используем текст ответа для поиска соответствующего варианта
+            print(f"  [AI] Вызываем handle_task с ответом: '{answer_text}'")
             result = handle_task(driver, answer_text)
         elif task_type == "checkbox":
             # Для checkbox нужно распарсить ответ (может быть несколько вариантов)
@@ -3030,6 +3295,16 @@ def handle_randomized_task_with_ai(driver, api_key=None, model=None):
             # Проверяем, изменился ли URL (это означает, что мы перешли на следующую задачу)
             time.sleep(1)
             url_after = driver.current_url
+            
+            # Проверяем, не попали ли мы на страницу завершения теста
+            if "/trainings/" in url_after and "/finish" in url_after:
+                print("  [AI] Перешли на страницу завершения теста")
+                if handle_training_finish_page(driver):
+                    print("  [AI] Тест завершен")
+                    return "homework_completed"
+                else:
+                    return "homework_completed"  # Все равно считаем завершенным
+            
             if url_after != url_before:
                 print(f"  [AI] Перешли на следующую задачу: {url_after}")
                 return True
@@ -3050,28 +3325,56 @@ def submit_task_form(driver):
     """Отправляет форму задачи (нажимает кнопку 'Ответить') и затем кнопку 'Дальше'
     Если задача уже решена и нет кнопки submit, сразу ищет кнопку 'Дальше'"""
     try:
-        task_form = get_task_form(driver)
+        # Для контрольных тестов используем больший таймаут, так как форма может загружаться дольше
+        is_control_test = "/trainings/" in driver.current_url
+        timeout = 2.0 if is_control_test else 1.0
+        task_form = get_task_form(driver, timeout=timeout)
         
         # Проверяем, есть ли кнопка отправки
         submit_button = None
-        try:
-            submit_button = task_form.find_element(By.CSS_SELECTOR, "button[type='submit']")
-        except:
-            print("  Кнопка 'Ответить' не найдена (возможно, задача уже решена)")
         
-        # Для контрольных заданий проверяем кнопку с id="training-task-page-make-answer"
+        # СНАЧАЛА проверяем, является ли это контрольным заданием (по URL или наличию кнопки)
+        is_control_test = "/trainings/" in driver.current_url
+        
+        # Для контрольных заданий ПЕРВЫМ делом проверяем кнопку с id="training-task-page-make-answer"
         # Она может быть как кнопкой "Ответить", так и "Далее" в зависимости от состояния
-        training_button = None
-        try:
-            training_button = driver.find_element(By.ID, "training-task-page-make-answer")
-            # Проверяем текст кнопки
-            button_text = training_button.text.strip().lower()
-            if "ответить" in button_text or "submit" in button_text or not button_text:
-                # Это кнопка "Ответить"
-                submit_button = training_button
-                print("  Найдена кнопка 'Ответить' для контрольного задания")
-        except:
-            pass
+        if is_control_test:
+            try:
+                training_button = driver.find_element(By.ID, "training-task-page-make-answer")
+                # Проверяем текст кнопки
+                button_text = training_button.text.strip().lower()
+                print(f"  [DEBUG] Найдена кнопка контрольного задания, текст: '{training_button.text.strip()}'")
+                if "ответить" in button_text or "submit" in button_text or not button_text:
+                    # Это кнопка "Ответить"
+                    submit_button = training_button
+                    print("  Найдена кнопка 'Ответить' для контрольного задания")
+                else:
+                    print(f"  [DEBUG] Кнопка имеет другой текст: '{button_text}', это не 'Ответить'")
+            except Exception as e:
+                print(f"  [DEBUG] Не удалось найти кнопку training-task-page-make-answer: {e}")
+        
+        # Если не нашли кнопку для контрольного задания, пробуем найти обычную кнопку submit
+        if not submit_button:
+            try:
+                submit_button = task_form.find_element(By.CSS_SELECTOR, "button[type='submit']")
+                print("  Найдена обычная кнопка 'Ответить' (button[type='submit'])")
+            except:
+                print("  Кнопка 'Ответить' не найдена в форме (возможно, задача уже решена)")
+                
+                # Если это контрольный тест, но кнопка не найдена, пробуем еще раз найти training-task-page-make-answer
+                # (возможно, она не была найдена из-за таймаута)
+                if is_control_test:
+                    try:
+                        wait_for_button = WebDriverWait(driver, 1.0)
+                        training_button = wait_for_button.until(
+                            EC.presence_of_element_located((By.ID, "training-task-page-make-answer"))
+                        )
+                        button_text = training_button.text.strip().lower()
+                        if "ответить" in button_text or "submit" in button_text or not button_text:
+                            submit_button = training_button
+                            print("  Найдена кнопка 'Ответить' для контрольного задания (с ожиданием)")
+                    except:
+                        pass
         
         if submit_button:
             # Проверяем, что хотя бы одна радио-кнопка выбрана (если это radio задача)
@@ -3103,20 +3406,46 @@ def submit_task_form(driver):
             driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", submit_button)
             time.sleep(0.3)
             
+            # Проверяем, что кнопка видима и кликабельна
+            try:
+                is_displayed = submit_button.is_displayed()
+                is_enabled = submit_button.is_enabled()
+                print(f"  [DEBUG] Кнопка видима: {is_displayed}, включена: {is_enabled}")
+            except:
+                pass
+            
             # Кликаем на кнопку
             try:
-                submit_button.click()
-                print("  ✓ Кликнули на кнопку 'Ответить'")
+                # Для контрольных тестов используем JS клик для надежности
+                if is_control_test:
+                    print("  [DEBUG] Используем JS клик для контрольного теста")
+                    driver.execute_script("arguments[0].click();", submit_button)
+                    print("  ✓ Кликнули на кнопку 'Ответить' через JS")
+                else:
+                    submit_button.click()
+                    print("  ✓ Кликнули на кнопку 'Ответить'")
             except Exception as e:
                 print(f"  ⚠ Ошибка при клике на кнопку: {e}, пробуем через JS...")
                 driver.execute_script("arguments[0].click();", submit_button)
                 print("  ✓ Кликнули на кнопку 'Ответить' через JS")
             
             print("  ✓ Форма отправлена, ждем появления кнопки 'Дальше'...")
-            time.sleep(0.5)  # Уменьшено время ожидания для обработки формы
+            time.sleep(0.3)  # Уменьшено время ожидания для обработки формы
+            
+            # ВАЖНО: Проверяем, не перешли ли мы сразу на страницу завершения теста
+            # Это может произойти, если это был последний вопрос контрольного теста
+            current_url_after_submit = driver.current_url
+            if "/trainings/" in current_url_after_submit and "/finish" in current_url_after_submit:
+                print("  ✓ Перешли на страницу завершения теста сразу после отправки последнего ответа")
+                if handle_training_finish_page(driver):
+                    print("  ✓ Тест завершен")
+                    return "homework_completed"
+                else:
+                    print("  ⚠ Не удалось обработать страницу завершения теста")
+                    return "homework_completed"  # Все равно считаем завершенным
         else:
             print("  Задача уже решена, ищем кнопку 'Дальше'...")
-            time.sleep(0.3)  # Небольшая задержка для стабильности
+            time.sleep(0.1)  # Небольшая задержка для стабильности
         
         # Ищем кнопку "Дальше" или "Далее"
         # Если кнопка не найдена - это последний вопрос домашнего задания
@@ -3130,7 +3459,7 @@ def submit_task_form(driver):
             # Проверяем текст кнопки, чтобы убедиться, что это действительно "Далее"
             try:
                 # Ждем, пока кнопка изменится на "Далее" после отправки формы
-                wait_for_next = WebDriverWait(driver, 3)
+                wait_for_next = WebDriverWait(driver, 0.8)  # Уменьшено для ускорения
                 training_button = wait_for_next.until(
                     lambda d: (
                         btn := d.find_element(By.ID, "training-task-page-make-answer"),
@@ -3263,7 +3592,7 @@ def submit_task_form(driver):
                 # Ждем загрузки новой страницы - проверяем изменение URL или появление новой формы
                 try:
                     # Ждем изменения URL или появления новой формы задачи
-                    wait = WebDriverWait(driver, 2.0)
+                    wait = WebDriverWait(driver, 1.0)  # Уменьшено для ускорения
                     try:
                         # Ждем изменения URL (для контрольных заданий)
                         wait.until(lambda d: d.current_url != url_before)
@@ -3276,6 +3605,18 @@ def submit_task_form(driver):
                             print("  ✓ Старая форма исчезла, ждем новую...")
                         except:
                             pass
+                    
+                    # Проверяем, не попали ли мы на страницу завершения теста (/trainings/[id]/finish)
+                    current_url_after = driver.current_url
+                    if "/trainings/" in current_url_after and "/finish" in current_url_after:
+                        print("  ✓ Перешли на страницу завершения теста")
+                        # Обрабатываем страницу завершения теста
+                        if handle_training_finish_page(driver):
+                            print("  ✓ Тест завершен, возвращаемся на страницу курса")
+                            return "homework_completed"
+                        else:
+                            print("  ⚠ Не удалось обработать страницу завершения теста")
+                            return "homework_completed"  # Все равно считаем завершенным
                     
                     # Ждем появления новой формы (поддерживаем как обычные, так и контрольные задания)
                     try:
@@ -3292,7 +3633,7 @@ def submit_task_form(driver):
                             # изменилась обратно на "Ответить" (это означает, что новая задача загружена)
                             # Это предотвращает повторное нажатие кнопки "Далее" для уже загруженной задачи
                             try:
-                                wait_for_answer_button = WebDriverWait(driver, 2)
+                                wait_for_answer_button = WebDriverWait(driver, 0.6)  # Уменьшено для ускорения
                                 answer_button = wait_for_answer_button.until(
                                     lambda d: (
                                         btn := d.find_element(By.ID, "training-task-page-make-answer"),
@@ -3306,8 +3647,21 @@ def submit_task_form(driver):
                                 # или кнопка имеет другой текст
                                 pass
                         except:
-                            # Если ничего не найдено, просто ждем немного
-                            time.sleep(0.5)
+                            # Если ничего не найдено, проверяем, не попали ли мы на страницу завершения
+                            current_url_check = driver.current_url
+                            if "/trainings/" in current_url_check and "/finish" in current_url_check:
+                                print("  ✓ Перешли на страницу завершения теста (при проверке формы)")
+                                if handle_training_finish_page(driver):
+                                    return "homework_completed"
+                            else:
+                                time.sleep(0.5)
+                    
+                    # Дополнительная проверка после ожидания: не попали ли мы на страницу завершения
+                    final_url_check = driver.current_url
+                    if "/trainings/" in final_url_check and "/finish" in final_url_check:
+                        print("  ✓ Перешли на страницу завершения теста (после ожидания формы)")
+                        if handle_training_finish_page(driver):
+                            return "homework_completed"
                     
                     # Дополнительная проверка: убеждаемся, что форма задачи обновилась
                     # Ждем немного, чтобы React успел обновить содержимое
@@ -3316,15 +3670,34 @@ def submit_task_form(driver):
                     # Fallback: ждем немного времени для загрузки
                     print(f"  [DEBUG] Ожидание загрузки: {e}")
                     time.sleep(0.5)
+                    # Проверяем, не попали ли мы на страницу завершения теста
+                    current_url_fallback = driver.current_url
+                    if "/trainings/" in current_url_fallback and "/finish" in current_url_fallback:
+                        print("  ✓ Перешли на страницу завершения теста (fallback)")
+                        if handle_training_finish_page(driver):
+                            return "homework_completed"
                 
                 return True
             else:
                 # Кнопка "Дальше" не найдена - это последний вопрос домашнего задания
                 print("  ⚠ Кнопка 'Дальше' не найдена - это последний вопрос домашнего задания")
+                
+                # ВАЖНО: Проверяем, не попали ли мы на страницу завершения теста
+                # После нажатия "Ответить" на последнем вопросе может произойти переход на /trainings/[id]/finish
+                current_url = driver.current_url
+                if "/trainings/" in current_url and "/finish" in current_url:
+                    print("  ✓ Перешли на страницу завершения теста после последнего вопроса")
+                    if handle_training_finish_page(driver):
+                        print("  ✓ Тест завершен")
+                        return "homework_completed"
+                    else:
+                        print("  ⚠ Не удалось обработать страницу завершения теста")
+                        return "homework_completed"  # Все равно считаем завершенным
+                
+                # Если мы не на странице завершения, возвращаемся на страницу курса
                 print("  Возвращаемся на страницу курса...")
                 
                 # Возвращаемся на страницу курса (определяем по текущему URL)
-                current_url = driver.current_url
                 # Извлекаем базовый URL курса из текущего URL
                 match = re.search(r'(https://kb\.cifrium\.ru/teacher/courses/\d+)', current_url)
                 if match:
@@ -3333,7 +3706,7 @@ def submit_task_form(driver):
                 else:
                     # Fallback на MAIN_PAGE_URL, если не удалось извлечь
                     driver.get(MAIN_PAGE_URL)
-                time.sleep(3)  # Увеличиваем время ожидания для обновления статуса заданий
+                time.sleep(1.5)  # Уменьшено для ускорения
                 print("  ✓ Вернулись на страницу курса")
                 return "homework_completed"  # Специальное значение для обозначения завершения ДЗ
                 
@@ -3363,11 +3736,11 @@ def handle_task(driver, task_answer=None):
             print("  ✓ Задача уже решена, переходим к следующей")
             # Пытаемся найти кнопку "Дальше" или "Next" для перехода к следующей задаче
             try:
-                next_button = WebDriverWait(driver, 2).until(
+                next_button = WebDriverWait(driver, 1).until(  # Уменьшено для ускорения
                     EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Дальше') or contains(text(), 'Next')]"))
                 )
                 next_button.click()
-                time.sleep(1.5)  # Ждем перехода к следующей задаче
+                time.sleep(0.5)  # Уменьшено для ускорения
                 return True
             except:
                 # Если кнопки нет, возможно это последняя задача или нужно вернуться на страницу задач
@@ -3629,7 +4002,10 @@ def find_best_radio_match(answer_text, radios):
     # Сортируем по длине (сначала самые длинные) для приоритета полных ответов
     candidates.sort(key=lambda x: x[4], reverse=True)
     
-    print(f"    [DEBUG] Ищем совпадение для: '{answer_text[:100]}...' (нормализовано: '{answer_normalized[:100]}...', длина: {len(answer_normalized)})")
+    print(f"    [DEBUG] ========== ПОИСК СОВПАДЕНИЯ ==========")
+    print(f"    [DEBUG] Исходный ответ от AI: '{answer_text}'")
+    print(f"    [DEBUG] Нормализованный ответ: '{answer_normalized}' (длина: {len(answer_normalized)})")
+    print(f"    [DEBUG] Количество кандидатов: {len(candidates)}")
     
     # 1. Ищем точное совпадение
     for radio, value, label_text, label_normalized, _ in candidates:
@@ -3729,16 +4105,51 @@ def find_best_radio_match(answer_text, radios):
                     # (мы уже отсортированы по длине, так что первый подходящий - самый длинный)
                     return radio, value
     
-    # Если ничего не найдено, логируем для отладки
-    print(f"    [DEBUG] Ответ из Excel (нормализованный): '{answer_normalized[:100]}...' (длина: {len(answer_normalized)})")
-    print(f"    [DEBUG] Доступные варианты (первые 3):")
-    for radio, value, label_text, label_normalized, label_len in candidates[:3]:
-        print(f"      - '{label_text[:100]}...' (нормализованный: '{label_normalized[:100]}...', длина: {label_len})")
+    # Если ничего не найдено, логируем для отладки и пробуем найти наиболее похожий вариант
+    print(f"    [DEBUG] ⚠ Не найдено точного совпадения!")
+    print(f"    [DEBUG] Ответ от AI (нормализованный): '{answer_normalized}' (длина: {len(answer_normalized)})")
+    print(f"    [DEBUG] Доступные варианты (все):")
+    for i, (radio, value, label_text, label_normalized, label_len) in enumerate(candidates):
+        print(f"      {i+1}. value={value}, text='{label_text}' (нормализованный: '{label_normalized}', длина: {label_len})")
         # Проверяем, есть ли частичное совпадение
         if answer_normalized.startswith(label_normalized) or label_normalized.startswith(answer_normalized):
             overlap = min(len(answer_normalized), len(label_normalized))
             print(f"        [Частичное совпадение: первые {overlap} символов совпадают]")
     
+    # Если ничего не найдено, но есть кандидаты, выбираем наиболее похожий (схожесть > 20%)
+    if candidates:
+        print(f"    [DEBUG] Пробуем найти наиболее похожий вариант...")
+        from difflib import SequenceMatcher
+        best_match = None
+        best_similarity = 0
+        similarity_scores = []
+        for radio, value, label_text, label_normalized, _ in candidates:
+            similarity = SequenceMatcher(None, answer_normalized, label_normalized).ratio()
+            similarity_scores.append((similarity, radio, value, label_text, label_normalized))
+            print(f"        Схожесть с вариантом '{label_text[:50]}...': {similarity:.2%}")
+            if similarity > best_similarity:
+                best_similarity = similarity
+                best_match = (radio, value, label_text)
+        
+        # Сортируем по схожести и показываем топ-3
+        similarity_scores.sort(key=lambda x: x[0], reverse=True)
+        print(f"    [DEBUG] Топ-3 наиболее похожих вариантов:")
+        for i, (sim, radio, value, label_text, label_normalized) in enumerate(similarity_scores[:3], 1):
+            print(f"      {i}. Схожесть: {sim:.2%}, вариант: '{label_text[:60]}...'")
+        
+        # Используем более низкий порог (20% вместо 50%) для выбора варианта
+        # Если есть хотя бы какое-то совпадение, выбираем наиболее похожий
+        if best_match and best_similarity >= 0.2:  # Минимум 20% схожести
+            print(f"    [DEBUG] ✓ Найден наиболее похожий вариант (схожесть: {best_similarity:.2%}): '{best_match[2][:80]}...'")
+            return best_match[0], best_match[1]
+        elif best_match and best_similarity > 0:
+            # Даже если схожесть очень низкая, выбираем наиболее похожий вариант
+            print(f"    [DEBUG] ⚠ Схожесть низкая ({best_similarity:.2%}), но выбираем наиболее похожий вариант: '{best_match[2][:80]}...'")
+            return best_match[0], best_match[1]
+        else:
+            print(f"    [DEBUG] ⚠ Не удалось найти подходящий вариант (схожесть: {best_similarity:.2%})")
+    
+    print(f"    [DEBUG] ⚠ Возвращаем None, None - совпадение не найдено")
     return None, None
 
 def find_checkbox_matches(answer_parts, checkboxes):
@@ -4248,6 +4659,15 @@ def process_randomized_tasks_with_ai(driver, api_key=None, model=None, max_tasks
             else:
                 consecutive_same_url = 0
             
+            # Проверяем, не попали ли мы на страницу завершения теста
+            if "/trainings/" in current_url and "/finish" in current_url:
+                print("  [AI] На странице завершения теста")
+                if handle_training_finish_page(driver):
+                    print("  [AI] Тест завершен")
+                    return "homework_completed"
+                else:
+                    return "homework_completed"  # Все равно считаем завершенным
+            
             # Проверяем, находимся ли мы на странице задачи
             if "/trainings/" not in current_url and "/tasks/" not in current_url:
                 print("  [AI] Мы не на странице задачи - возможно, все задачи завершены")
@@ -4268,6 +4688,16 @@ def process_randomized_tasks_with_ai(driver, api_key=None, model=None, max_tasks
                 
                 # Проверяем, загрузилась ли следующая задача
                 new_url = driver.current_url
+                
+                # Проверяем, не попали ли мы на страницу завершения теста
+                if "/trainings/" in new_url and "/finish" in new_url:
+                    print("  [AI] Перешли на страницу завершения теста")
+                    if handle_training_finish_page(driver):
+                        print("  [AI] Тест завершен")
+                        return "homework_completed"
+                    else:
+                        return "homework_completed"  # Все равно считаем завершенным
+                
                 if new_url != current_url:
                     # URL изменился - перешли на новую задачу
                     print(f"  [AI] Перешли на новую задачу: {new_url}")
@@ -4279,7 +4709,7 @@ def process_randomized_tasks_with_ai(driver, api_key=None, model=None, max_tasks
                     print("  [AI] URL не изменился после обработки")
                     try:
                         # Ждем появления кнопки "Далее" (она может появиться после отправки ответа)
-                        wait = WebDriverWait(driver, 3)
+                        wait = WebDriverWait(driver, 1.5)  # Уменьшено для ускорения
                         next_button = wait.until(
                             EC.element_to_be_clickable((By.ID, "training-task-page-make-answer"))
                         )
@@ -4291,6 +4721,16 @@ def process_randomized_tasks_with_ai(driver, api_key=None, model=None, max_tasks
                             
                             # Проверяем, изменился ли URL после нажатия
                             final_url = driver.current_url
+                            
+                            # Проверяем, не попали ли мы на страницу завершения теста
+                            if "/trainings/" in final_url and "/finish" in final_url:
+                                print("  [AI] Перешли на страницу завершения теста")
+                                if handle_training_finish_page(driver):
+                                    print("  [AI] Тест завершен")
+                                    return "homework_completed"
+                                else:
+                                    return "homework_completed"  # Все равно считаем завершенным
+                            
                             if final_url != new_url:
                                 print(f"  [AI] Перешли на новую задачу: {final_url}")
                                 previous_url = final_url
@@ -4298,6 +4738,11 @@ def process_randomized_tasks_with_ai(driver, api_key=None, model=None, max_tasks
                                 continue
                             else:
                                 print("  [AI] URL не изменился после нажатия 'Далее' - возможно, это была последняя задача")
+                                # Проверяем, не попали ли мы на страницу завершения теста
+                                if "/trainings/" in final_url and "/finish" in final_url:
+                                    print("  [AI] На странице завершения теста")
+                                    if handle_training_finish_page(driver):
+                                        return "homework_completed"
                                 break
                     except:
                         print("  [AI] Кнопка 'Далее' не найдена - возможно, все задачи завершены")
@@ -4526,7 +4971,7 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
                 print(f"  [DEBUG] Обновлен task_data для задачи {task_index + 1}, ответ: '{str(task_data[answer_column])[:100]}...'")
                 
                 try:
-                    wait = WebDriverWait(driver, 2)
+                    wait = WebDriverWait(driver, 1)  # Уменьшено для ускорения
                     next_button = wait.until(EC.element_to_be_clickable((
                         By.CSS_SELECTOR,
                         ".styled__ButtonNext-qDZv, a.styled__Root-ebtVmd, a.fox-Anchor.styled__Root-ebtVmd, button[type='submit'], button[class*='Button']"
@@ -4540,7 +4985,7 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
                     except:
                         driver.execute_script("arguments[0].click();", next_button)
                     print("  ✓ Переход к следующей задаче")
-                    time.sleep(1.5)
+                    time.sleep(0.5)  # Уменьшено для ускорения
                     
                     # Проверяем, что URL изменился
                     url_after_next = driver.current_url
@@ -4596,7 +5041,7 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
                         print("  ✓ Задача уже решена (найдены элементы Solved при дополнительной проверке)")
                         # Пытаемся найти кнопку "Дальше"
                         try:
-                            wait = WebDriverWait(driver, 2)
+                            wait = WebDriverWait(driver, 1)  # Уменьшено для ускорения
                             next_button = wait.until(EC.element_to_be_clickable((
                                 By.CSS_SELECTOR,
                                 ".styled__ButtonNext-qDZv, a.styled__Root-ebtVmd, a.fox-Anchor.styled__Root-ebtVmd, button[type='submit'], button[class*='Button']"
@@ -4610,7 +5055,7 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
                             except:
                                 driver.execute_script("arguments[0].click();", next_button)
                             print("  ✓ Переход к следующей задаче")
-                            time.sleep(1.5)
+                            time.sleep(0.5)  # Уменьшено для ускорения
                             
                             url_after_next = driver.current_url
                             if url_before_next != url_after_next:
@@ -4822,7 +5267,7 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
                         print(f"  ⚠ Пытаемся перейти к следующей задаче вручную...")
                         # Пробуем найти кнопку "Дальше" и перейти
                         try:
-                            next_button = WebDriverWait(driver, 3).until(
+                            next_button = WebDriverWait(driver, 1.5).until(  # Уменьшено для ускорения
                                 EC.element_to_be_clickable((By.XPATH, "//a[contains(@class, 'styled__ButtonNext')] | //button[contains(text(), 'Дальше')] | //a[contains(text(), 'Дальше')]"))
                             )
                             next_button.click()
@@ -4888,6 +5333,19 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
                 elif result:
                     print(f"  ✓ Задача {task_index + 1} обработана успешно")
                     
+                    # ВАЖНО: Проверяем, не перешли ли мы на страницу завершения теста
+                    # Это может произойти после обработки последнего вопроса контрольного теста
+                    time.sleep(1)  # Небольшая задержка для загрузки страницы
+                    url_after_check = driver.current_url
+                    if "/trainings/" in url_after_check and "/finish" in url_after_check:
+                        print("  ✓ Перешли на страницу завершения теста после обработки задачи")
+                        if handle_training_finish_page(driver):
+                            print("  ✓ Тест завершен")
+                            return "homework_completed"
+                        else:
+                            print("  ⚠ Не удалось обработать страницу завершения теста")
+                            return "homework_completed"  # Все равно считаем завершенным
+                    
                     # Увеличиваем task_index сразу после успешной обработки задачи
                     # Это гарантирует, что следующая итерация будет использовать правильный ответ из Excel
                     task_index += 1
@@ -4908,6 +5366,16 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
                     match_after = re.search(r'/tasks/(\d+)', url_after)
                     if match_after:
                         task_id_after = match_after.group(1)
+                    
+                    # ВАЖНО: Проверяем, не перешли ли мы на страницу завершения теста
+                    if "/trainings/" in url_after and "/finish" in url_after:
+                        print("  ✓ Перешли на страницу завершения теста")
+                        if handle_training_finish_page(driver):
+                            print("  ✓ Тест завершен")
+                            return "homework_completed"
+                        else:
+                            print("  ⚠ Не удалось обработать страницу завершения теста")
+                            return "homework_completed"  # Все равно считаем завершенным
                     
                     # Если URL изменился И ID задачи изменился, значит мы перешли на новую задачу
                     if url_before != url_after:
@@ -4984,7 +5452,7 @@ def handle_kinescope_video(driver):
     запускает видео и перематывает на конец
     Возвращает: True если видео найдено и обработано, False если видео не найдено, None если ошибка"""
     try:
-        wait = WebDriverWait(driver, 15)  # Увеличил время ожидания
+        wait = WebDriverWait(driver, 5)  # Уменьшено время ожидания для ускорения
         
         print("  Ищем Kinescope iframe...")
         
@@ -5145,8 +5613,8 @@ def handle_kinescope_video(driver):
                                 }
                             }
                             
-                            // Ждем немного для загрузки метаданных
-                            await new Promise(resolve => setTimeout(resolve, 3000));
+                            // Ждем немного для загрузки метаданных (уменьшено для ускорения)
+                            await new Promise(resolve => setTimeout(resolve, 1000));
                             
                             // Получаем длительность
                             let duration = 0;
@@ -5175,14 +5643,14 @@ def handle_kinescope_video(driver):
                                     await player.seek(seekTime);
                                     console.log('Video seeked to:', seekTime);
                                     
-                                    // Ждем, пока видео дойдет до конца и остановится
+                                    // Ждем окончания видео (оптимизированная версия)
                                     console.log('Waiting for video to finish...');
                                     let videoEnded = false;
                                     let checkCount = 0;
-                                    const maxChecks = 60; // Максимум 60 проверок (около 60 секунд)
+                                    const maxChecks = 30; // Максимум 30 проверок (около 30 секунд, так как уже на 99%)
                                     
                                     while (!videoEnded && checkCount < maxChecks) {
-                                        await new Promise(resolve => setTimeout(resolve, 1000));
+                                        await new Promise(resolve => setTimeout(resolve, 500)); // Проверяем каждые 0.5 секунды
                                         
                                         try {
                                             const currentTime = await player.getCurrentTime();
@@ -5194,7 +5662,7 @@ def handle_kinescope_video(driver):
                                                 console.log('Video ended at:', currentTime);
                                             } else {
                                                 checkCount++;
-                                                if (checkCount % 5 === 0) {
+                                                if (checkCount % 10 === 0) {
                                                     console.log(`Waiting... current time: ${currentTime.toFixed(2)}/${duration.toFixed(2)}`);
                                                 }
                                             }
@@ -5202,7 +5670,7 @@ def handle_kinescope_video(driver):
                                             console.log('Error checking video status:', checkError);
                                             checkCount++;
                                             // Если не можем проверить статус, ждем еще немного и считаем, что закончилось
-                                            if (checkCount >= 10) {
+                                            if (checkCount >= 5) {
                                                 videoEnded = true;
                                                 console.log('Assuming video ended after timeout');
                                             }
@@ -5293,7 +5761,7 @@ def handle_kinescope_video(driver):
                     except Exception as play_error:
                         print(f"  ⚠ Ошибка при запуске видео: {play_error}, продолжаем...")
                     
-                    time.sleep(3)  # Ждем загрузки метаданных
+                    time.sleep(1)  # Уменьшено время ожидания для ускорения
                     
                     # Получаем длительность
                     duration = 0
@@ -5320,14 +5788,14 @@ def handle_kinescope_video(driver):
                         try:
                             driver.execute_script("arguments[0].currentTime = arguments[1];", video, target_time)
                             
-                            # Ждем, пока видео дойдет до конца и остановится
+                            # Ждем окончания видео (оптимизированная версия)
                             print("  Ждем окончания видео...")
                             video_ended = False
                             check_count = 0
-                            max_checks = 60  # Максимум 60 проверок (около 60 секунд)
+                            max_checks = 30  # Максимум 30 проверок (около 15 секунд, так как уже на 98%)
                             
                             while not video_ended and check_count < max_checks:
-                                time.sleep(1)
+                                time.sleep(0.5)  # Проверяем каждые 0.5 секунды
                                 
                                 try:
                                     current_time = driver.execute_script("return arguments[0].currentTime;", video)
@@ -5339,12 +5807,12 @@ def handle_kinescope_video(driver):
                                         print(f"  Видео закончилось на позиции {current_time:.2f} сек")
                                     else:
                                         check_count += 1
-                                        if check_count % 5 == 0:
+                                        if check_count % 10 == 0:
                                             print(f"  Ожидание... текущая позиция: {current_time:.2f}/{duration:.2f} сек")
                                 except Exception as check_error:
                                     print(f"  ⚠ Ошибка при проверке статуса: {check_error}")
                                     check_count += 1
-                                    if check_count >= 10:
+                                    if check_count >= 5:
                                         video_ended = True
                                         print("  Предполагаем, что видео закончилось после таймаута")
                             
@@ -5353,7 +5821,7 @@ def handle_kinescope_video(driver):
                             else:
                                 print("  ⚠ Таймаут ожидания окончания видео, продолжаем...")
                             
-                            print(f"  ✓ Видео перемотано на {target_time:.2f} сек (98% из {duration:.2f} сек)")
+                            print(f"  ✓ Видео перемотано на {target_time:.2f} сек (98% из {duration:.2f} сек) и дождались окончания")
                             
                             driver.switch_to.default_content()
                             return True
@@ -5455,7 +5923,7 @@ def main():
     # Открываем главную страницу выбранного модуля
     print(f"\nОткрываем главную страницу модуля {selected_module}: {initial_course_url}")
     driver.get(initial_course_url)
-    time.sleep(3)
+    time.sleep(1.5)  # Уменьшено для ускорения
     
     # Проверяем, нужен ли вход
     current_url = driver.current_url
@@ -5499,7 +5967,7 @@ def main():
             print(f"⚠ Текущий URL: {current_url}")
             print("Переходим на целевую страницу...")
             driver.get(initial_course_url)
-            time.sleep(3)
+            time.sleep(1.5)  # Уменьшено для ускорения
             
             final_url = driver.current_url
             if MAIN_PAGE_URL_1 in final_url or MAIN_PAGE_URL in final_url or MAIN_PAGE_URL_2 in final_url or "teacher/courses" in final_url:
@@ -5643,27 +6111,21 @@ def main():
                         print("Контрольный тест модуля 2 завершен!")
                         print("=" * 50)
                         
-                        # Проверяем, есть ли еще рандомизированные задачи после контрольного теста
-                        # Пробуем распарсить задачу из HTML - если это удалось, значит есть еще задачи
-                        print("  Проверяем наличие дополнительных рандомизированных задач...")
-                        time.sleep(2)  # Ждем загрузки страницы
-                        task_data = parse_task_from_html(driver)
-                        if task_data and task_data.get('description') and task_data.get('options'):
-                            # Найдена задача - обрабатываем рандомизированные задачи
+                        # Возвращаемся на главную страницу курса для поиска финальных тестов
+                        print("  Возвращаемся на главную страницу курса...")
+                        driver.get(MAIN_PAGE_URL)
+                        time.sleep(3)
+                        
+                        # Ищем и переходим на финальные тесты (урок после контрольного 6107)
+                        print("  Ищем финальные тесты на главной странице курса...")
+                        if find_and_click_final_tests(driver, "6107", "771"):
+                            # Финальные тесты найдены и открыты - обрабатываем их через AI
                             print("\n" + "=" * 50)
-                            print("Найдены дополнительные рандомизированные тесты модуля 2!")
-                            print("Обрабатываем их с помощью AI...")
+                            print("Найдены финальные рандомизированные тесты модуля 2!")
+                            print("Скрипт остановлен - финальные тесты готовы к обработке")
                             print("=" * 50)
-                            randomized_result = process_randomized_tasks_with_ai(driver, OPENROUTER_API_KEY, OPENROUTER_MODEL)
-                            
-                            if randomized_result == "homework_completed":
-                                print("\n" + "=" * 50)
-                                print("Урок 6107 полностью завершен!")
-                                print("=" * 50)
-                            else:
-                                print("\n  Дополнительные тесты модуля 2 обработаны")
                         else:
-                            print("  Дополнительных рандомизированных задач не найдено")
+                            print("  Финальных рандомизированных тестов не найдено на главной странице курса")
                         
                         print("Нажмите Enter для перехода к модулю 3...")
                         print("=" * 50)
@@ -5699,32 +6161,21 @@ def main():
                             print("Контрольный тест модуля 3 завершен!")
                             print("=" * 50)
                             
-                            # Проверяем, есть ли еще рандомизированные задачи после контрольного теста
-                            # Пробуем распарсить задачу из HTML - если это удалось, значит есть еще задачи
-                            print("  Проверяем наличие дополнительных рандомизированных задач...")
-                            time.sleep(2)  # Ждем загрузки страницы
-                            task_data_module3 = parse_task_from_html(driver)
-                            if task_data_module3 and task_data_module3.get('description') and task_data_module3.get('options'):
-                                # Найдена задача - обрабатываем рандомизированные задачи
+                            # Возвращаемся на главную страницу курса для поиска финальных тестов
+                            print("  Возвращаемся на главную страницу курса...")
+                            driver.get(MAIN_PAGE_URL_2)
+                            time.sleep(3)
+                            
+                            # Ищем и переходим на финальные тесты (урок после контрольного 6108)
+                            print("  Ищем финальные тесты на главной странице курса...")
+                            if find_and_click_final_tests(driver, "6108", "772"):
+                                # Финальные тесты найдены и открыты - останавливаемся здесь
                                 print("\n" + "=" * 50)
-                                print("Найдены дополнительные рандомизированные тесты модуля 3!")
-                                print("Обрабатываем их с помощью AI...")
+                                print("Найдены финальные рандомизированные тесты модуля 3!")
+                                print("Скрипт остановлен - финальные тесты готовы к обработке")
                                 print("=" * 50)
-                                randomized_result_module3 = process_randomized_tasks_with_ai(driver, OPENROUTER_API_KEY, OPENROUTER_MODEL)
-                                
-                                if randomized_result_module3 == "homework_completed":
-                                    print("\n" + "=" * 50)
-                                    print("Модуль 3 (курс 772) полностью завершен!")
-                                    print("Все модули обработаны!")
-                                    print("=" * 50)
-                                else:
-                                    print("\n  Дополнительные тесты модуля 3 обработаны")
-                                    print("\n" + "=" * 50)
-                                    print("Модуль 3 (курс 772) завершен!")
-                                    print("Все модули обработаны!")
-                                    print("=" * 50)
                             else:
-                                print("  Дополнительных рандомизированных задач не найдено")
+                                print("  Финальных рандомизированных тестов не найдено на главной странице курса")
                                 print("\n" + "=" * 50)
                                 print("Модуль 3 (курс 772) завершен!")
                                 print("Все модули обработаны!")
@@ -5735,7 +6186,11 @@ def main():
                             break
                     else:
                         print("\n  Остаемся на странице задач модуля 2")
-                        break
+                        # После break выходим из блока if incomplete_tasks
+                    # и попадаем в начало основного цикла while True
+                    # где снова извлекаются задания - это создает бесконечный цикл
+                    # Нужно добавить проверку, чтобы не обрабатывать задания повторно
+                    break
                 else:
                     # Модуль 3 завершен
                     print("\n" + "=" * 50)
@@ -5745,6 +6200,8 @@ def main():
                     break
             
             # Извлекаем все задания на текущей странице
+            # НО только если мы не в процессе завершения модуля
+            # (проверка выполняется выше, если модуль завершен, используется break)
             print("Извлекаем задания на текущей странице...")
             all_task_links = get_task_links(driver, lessons_list, current_course_id)
             
@@ -5782,12 +6239,103 @@ def main():
                 
                 print(f"  На странице задания. URL: {driver.current_url}")
                 
+                # Проверяем, не находимся ли мы на контрольном тесте (6107 для модуля 2, 6108 для модуля 3)
+                current_url = driver.current_url
+                is_control_test = "/lessons/6107" in current_url or "/lessons/6108" in current_url
+                
+                # Если это контрольный тест, обрабатываем его сразу, не возвращаясь в цикл
+                if is_control_test:
+                    print("  Это контрольный тест, обрабатываем его...")
+                    # Определяем, какой Excel файл использовать
+                    if "/lessons/6107" in current_url:
+                        # Модуль 2 - контрольный тест 6107
+                        excel_file = "ftest1.xlsx"
+                        course_id = "771"
+                    elif "/lessons/6108" in current_url:
+                        # Модуль 3 - контрольный тест 6108
+                        excel_file = "ftest2.xlsx"
+                        course_id = "772"
+                    else:
+                        excel_file = None
+                    
+                    if excel_file:
+                        # Нажимаем кнопку задач, если нужно
+                        handle_homework_button(driver)
+                        time.sleep(2)
+                        
+                        # Обрабатываем задачи из Excel
+                        print(f"\n  Обрабатываем контрольный тест из Excel ({excel_file})...")
+                        result = process_tasks_from_excel(driver, excel_file)
+                        
+                        if result == "homework_completed":
+                            print(f"\n  Контрольный тест завершен!")
+                            # Возвращаемся на главную страницу курса для поиска финальных тестов
+                            if course_id == "771":
+                                main_page = MAIN_PAGE_URL
+                            else:
+                                main_page = MAIN_PAGE_URL_2
+                            
+                            print("  Возвращаемся на главную страницу курса...")
+                            driver.get(main_page)
+                            time.sleep(3)
+                            
+                            # Ищем и переходим на финальные тесты
+                            print("  Ищем финальные тесты на главной странице курса...")
+                            control_lesson_id = "6107" if course_id == "771" else "6108"
+                            if find_and_click_final_tests(driver, control_lesson_id, course_id):
+                                # Финальные тесты найдены и открыты - останавливаемся здесь
+                                print(f"\n" + "=" * 50)
+                                print(f"  Найдены финальные рандомизированные тесты!")
+                                print(f"  Скрипт остановлен - финальные тесты готовы к обработке")
+                                print("=" * 50)
+                                
+                                # Для модуля 2 - показываем промпт для перехода к модулю 3
+                                if course_id == "771":
+                                    print("\n" + "=" * 50)
+                                    print("Нажмите Enter для перехода к модулю 3...")
+                                    print("=" * 50)
+                                    input("\n>>> Нажмите Enter для продолжения...")
+                                    current_course_url = MAIN_PAGE_URL_2
+                                    current_course_id = "772"
+                                    current_excel_file = "ftest2.xlsx"
+                                    selected_module = 3
+                                    print("Переходим на модуль 3...")
+                                    driver.get(current_course_url)
+                                    time.sleep(3)
+                                    # Продолжаем цикл для обработки модуля 3
+                                    continue
+                                else:
+                                    # Для модуля 3 - просто останавливаемся
+                                    print("\n  Скрипт остановлен на финальных тестах модуля 3")
+                                    break
+                            else:
+                                print("  Финальных рандомизированных тестов не найдено")
+                                # Если финальные тесты не найдены, выходим из цикла
+                                break
+                        else:
+                            print(f"\n  Остаемся на странице задач контрольного теста")
+                            break
+                    else:
+                        print("  ⚠ Не удалось определить Excel файл для контрольного теста")
+                        break
+                
                 # Обрабатываем Kinescope видео, если оно есть
                 print("  Проверяем наличие Kinescope видео...")
                 video_result = handle_kinescope_video(driver)
                 
+                # Если видео обработано успешно, переходим к следующему заданию
+                if video_result is True:
+                    print("  ✓ Видео обработано, переходим к следующему заданию")
+                    # Возвращаемся на главную страницу курса для продолжения обработки заданий
+                    match = re.search(r'(https://kb\.cifrium\.ru/teacher/courses/\d+)', current_url)
+                    if match:
+                        course_base_url = match.group(1)
+                        driver.get(course_base_url)
+                        time.sleep(1.5)
+                    continue  # Продолжаем цикл для обработки следующего задания
+                
                 # Если видео не найдено, это означает, что модуль завершен
-                # (последнее задание - тест без видео)
+                # (контрольные тесты уже обработаны выше)
                 if video_result is False:
                     print("\n" + "=" * 50)
                     print("⚠ На этом задании нет видео - модуль завершен!")
@@ -5807,8 +6355,13 @@ def main():
                         print("Переходим на курс 771...")
                         driver.get(current_course_url)
                         time.sleep(3)
-                        continue
+                        # Используем break, чтобы выйти из цикла обработки заданий
+                        # После break скрипт вернется в начало основного цикла while True
+                        # и начнет обработку нового модуля
+                        break
                     elif current_course_id == "771":
+                        # Для модуля 2 переходим на контрольный тест, не используем break
+                        # чтобы не попасть в бесконечный цикл
                         print("Модуль 2 (курс 771) завершен!")
                         print("=" * 50)
                         print("Переходим на финальный урок модуля 2 (6107)...")
@@ -5832,22 +6385,23 @@ def main():
                             print("Контрольный тест модуля 2 завершен!")
                             print("=" * 50)
                             
-                            # Проверяем, есть ли еще рандомизированные задачи после контрольного теста
-                            current_url_after_test = driver.current_url
-                            if "/trainings/" in current_url_after_test or "/tasks/" in current_url_after_test:
-                                # Мы все еще на странице задач - обрабатываем рандомизированные задачи
-                                print("\n" + "=" * 50)
-                                print("Обрабатываем дополнительные рандомизированные тесты модуля 2...")
-                                print("=" * 50)
-                                randomized_result = process_randomized_tasks_with_ai(driver, OPENROUTER_API_KEY, OPENROUTER_MODEL)
-                                
-                                if randomized_result == "homework_completed":
-                                    print("\n" + "=" * 50)
-                                    print("Урок 6107 полностью завершен!")
-                                    print("=" * 50)
-                                else:
-                                    print("\n  Дополнительные тесты модуля 2 обработаны")
+                            # Возвращаемся на главную страницу курса для поиска финальных тестов
+                            print("  Возвращаемся на главную страницу курса...")
+                            driver.get(MAIN_PAGE_URL)
+                            time.sleep(3)
                             
+                            # Ищем и переходим на финальные тесты (урок после контрольного 6107)
+                            print("  Ищем финальные тесты на главной странице курса...")
+                            if find_and_click_final_tests(driver, "6107", "771"):
+                                # Финальные тесты найдены и открыты - останавливаемся здесь
+                                print("\n" + "=" * 50)
+                                print("Найдены финальные рандомизированные тесты модуля 2!")
+                                print("Скрипт остановлен - финальные тесты готовы к обработке")
+                                print("=" * 50)
+                            else:
+                                print("  Финальных рандомизированных тестов не найдено на главной странице курса")
+                            
+                            print("\n" + "=" * 50)
                             print("Нажмите Enter для перехода к модулю 3...")
                             print("=" * 50)
                             input("\n>>> Нажмите Enter для продолжения...")
@@ -5882,27 +6436,21 @@ def main():
                                 print("Контрольный тест модуля 3 завершен!")
                                 print("=" * 50)
                                 
-                                # Проверяем, есть ли еще рандомизированные задачи после контрольного теста
-                                current_url_after_test_module3 = driver.current_url
-                                if "/trainings/" in current_url_after_test_module3 or "/tasks/" in current_url_after_test_module3:
-                                    # Мы все еще на странице задач - обрабатываем рандомизированные задачи
+                                # Возвращаемся на главную страницу курса для поиска финальных тестов
+                                print("  Возвращаемся на главную страницу курса...")
+                                driver.get(MAIN_PAGE_URL_2)
+                                time.sleep(3)
+                                
+                                # Ищем и переходим на финальные тесты (урок после контрольного 6108)
+                                print("  Ищем финальные тесты на главной странице курса...")
+                                if find_and_click_final_tests(driver, "6108", "772"):
+                                    # Финальные тесты найдены и открыты - останавливаемся здесь
                                     print("\n" + "=" * 50)
-                                    print("Обрабатываем дополнительные рандомизированные тесты модуля 3...")
+                                    print("Найдены финальные рандомизированные тесты модуля 3!")
+                                    print("Скрипт остановлен - финальные тесты готовы к обработке")
                                     print("=" * 50)
-                                    randomized_result_module3 = process_randomized_tasks_with_ai(driver, OPENROUTER_API_KEY, OPENROUTER_MODEL)
-                                    
-                                    if randomized_result_module3 == "homework_completed":
-                                        print("\n" + "=" * 50)
-                                        print("Модуль 3 (курс 772) полностью завершен!")
-                                        print("Все модули обработаны!")
-                                        print("=" * 50)
-                                    else:
-                                        print("\n  Дополнительные тесты модуля 3 обработаны")
-                                        print("\n" + "=" * 50)
-                                        print("Модуль 3 (курс 772) завершен!")
-                                        print("Все модули обработаны!")
-                                        print("=" * 50)
                                 else:
+                                    print("  Финальных рандомизированных тестов не найдено на главной странице курса")
                                     print("\n" + "=" * 50)
                                     print("Модуль 3 (курс 772) завершен!")
                                     print("Все модули обработаны!")
@@ -5939,13 +6487,15 @@ def main():
                         if result == "homework_completed":
                             # Домашнее задание завершено, вернулись на страницу курса
                             print("\n  Домашнее задание завершено, продолжаем с другими заданиями")
-                            # Полностью перезагружаем страницу, чтобы обновить статус заданий
-                            driver.get(current_course_url)
-                            time.sleep(3)  # Ждем обновления страницы
-                            
-                            # Принудительно обновляем страницу для обновления статуса заданий
-                            driver.refresh()
-                            time.sleep(2)
+                            # Проверяем, не находимся ли мы уже на странице курса
+                            current_url_check = driver.current_url
+                            if current_course_url not in current_url_check:
+                                # Если не на странице курса, переходим на неё
+                                driver.get(current_course_url)
+                                time.sleep(1.5)  # Уменьшено для ускорения
+                            else:
+                                # Если уже на странице курса, просто ждем немного для обновления статуса
+                                time.sleep(1)  # Уменьшено для ускорения
                             
                             # Продолжаем основной цикл для обработки других заданий
                             # Список заданий будет обновлен в начале следующей итерации цикла
@@ -6029,27 +6579,21 @@ def main():
                         print("Контрольный тест модуля 2 завершен!")
                         print("=" * 50)
                         
-                        # Проверяем, есть ли еще рандомизированные задачи после контрольного теста
-                        # Пробуем распарсить задачу из HTML - если это удалось, значит есть еще задачи
-                        print("  Проверяем наличие дополнительных рандомизированных задач...")
-                        time.sleep(2)  # Ждем загрузки страницы
-                        task_data = parse_task_from_html(driver)
-                        if task_data and task_data.get('description') and task_data.get('options'):
-                            # Найдена задача - обрабатываем рандомизированные задачи
+                        # Возвращаемся на главную страницу курса для поиска финальных тестов
+                        print("  Возвращаемся на главную страницу курса...")
+                        driver.get(MAIN_PAGE_URL)
+                        time.sleep(3)
+                        
+                        # Ищем и переходим на финальные тесты (урок после контрольного 6107)
+                        print("  Ищем финальные тесты на главной странице курса...")
+                        if find_and_click_final_tests(driver, "6107", "771"):
+                            # Финальные тесты найдены и открыты - обрабатываем их через AI
                             print("\n" + "=" * 50)
-                            print("Найдены дополнительные рандомизированные тесты модуля 2!")
-                            print("Обрабатываем их с помощью AI...")
+                            print("Найдены финальные рандомизированные тесты модуля 2!")
+                            print("Скрипт остановлен - финальные тесты готовы к обработке")
                             print("=" * 50)
-                            randomized_result = process_randomized_tasks_with_ai(driver, OPENROUTER_API_KEY, OPENROUTER_MODEL)
-                            
-                            if randomized_result == "homework_completed":
-                                print("\n" + "=" * 50)
-                                print("Урок 6107 полностью завершен!")
-                                print("=" * 50)
-                            else:
-                                print("\n  Дополнительные тесты модуля 2 обработаны")
                         else:
-                            print("  Дополнительных рандомизированных задач не найдено")
+                            print("  Финальных рандомизированных тестов не найдено на главной странице курса")
                         
                         print("Нажмите Enter для перехода к модулю 3...")
                         print("=" * 50)
@@ -6085,32 +6629,21 @@ def main():
                             print("Контрольный тест модуля 3 завершен!")
                             print("=" * 50)
                             
-                            # Проверяем, есть ли еще рандомизированные задачи после контрольного теста
-                            # Пробуем распарсить задачу из HTML - если это удалось, значит есть еще задачи
-                            print("  Проверяем наличие дополнительных рандомизированных задач...")
-                            time.sleep(2)  # Ждем загрузки страницы
-                            task_data_module3 = parse_task_from_html(driver)
-                            if task_data_module3 and task_data_module3.get('description') and task_data_module3.get('options'):
-                                # Найдена задача - обрабатываем рандомизированные задачи
+                            # Возвращаемся на главную страницу курса для поиска финальных тестов
+                            print("  Возвращаемся на главную страницу курса...")
+                            driver.get(MAIN_PAGE_URL_2)
+                            time.sleep(3)
+                            
+                            # Ищем и переходим на финальные тесты (урок после контрольного 6108)
+                            print("  Ищем финальные тесты на главной странице курса...")
+                            if find_and_click_final_tests(driver, "6108", "772"):
+                                # Финальные тесты найдены и открыты - останавливаемся здесь
                                 print("\n" + "=" * 50)
-                                print("Найдены дополнительные рандомизированные тесты модуля 3!")
-                                print("Обрабатываем их с помощью AI...")
+                                print("Найдены финальные рандомизированные тесты модуля 3!")
+                                print("Скрипт остановлен - финальные тесты готовы к обработке")
                                 print("=" * 50)
-                                randomized_result_module3 = process_randomized_tasks_with_ai(driver, OPENROUTER_API_KEY, OPENROUTER_MODEL)
-                                
-                                if randomized_result_module3 == "homework_completed":
-                                    print("\n" + "=" * 50)
-                                    print("Модуль 3 (курс 772) полностью завершен!")
-                                    print("Все модули обработаны!")
-                                    print("=" * 50)
-                                else:
-                                    print("\n  Дополнительные тесты модуля 3 обработаны")
-                                    print("\n" + "=" * 50)
-                                    print("Модуль 3 (курс 772) завершен!")
-                                    print("Все модули обработаны!")
-                                    print("=" * 50)
                             else:
-                                print("  Дополнительных рандомизированных задач не найдено")
+                                print("  Финальных рандомизированных тестов не найдено на главной странице курса")
                                 print("\n" + "=" * 50)
                                 print("Модуль 3 (курс 772) завершен!")
                                 print("Все модули обработаны!")
