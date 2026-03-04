@@ -1023,34 +1023,8 @@ def handle_radio_task(driver, answer):
                 return False
         
         print(f"  ⚠ Не найдена радио-кнопка для ответа: {answer}")
-        print(f"  [DEBUG] Пробуем выбрать первый вариант как fallback...")
-        # Fallback: выбираем первый вариант, если ничего не найдено
-        if radios and len(radios) > 0:
-            first_radio = radios[0]
-            first_value = first_radio.get_attribute("value")
-            print(f"  [DEBUG] Fallback: выбираем первый вариант (value={first_value})")
-            try:
-                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", first_radio)
-                time.sleep(0.3)
-                driver.execute_script("""
-                    var radio = arguments[0];
-                    radio.checked = true;
-                    var changeEvent = new Event('change', { bubbles: true, cancelable: true });
-                    radio.dispatchEvent(changeEvent);
-                    var clickEvent = new Event('click', { bubbles: true, cancelable: true });
-                    radio.dispatchEvent(clickEvent);
-                    var parent = radio.closest('div[class*="styled__Root"]');
-                    if (parent) {
-                        parent.click();
-                    }
-                """, first_radio)
-                time.sleep(0.3)
-                is_selected = driver.execute_script("return arguments[0].checked;", first_radio)
-                if is_selected:
-                    print(f"    ✓ Fallback: первый вариант выбран")
-                    return True
-            except Exception as e:
-                print(f"    ⚠ Ошибка при выборе первого варианта: {e}")
+        # Больше НЕ выбираем первый вариант наугад, чтобы не портить результат.
+        # Просто возвращаем False, задача будет пропущена.
         return False
         
     except Exception as e:
@@ -1509,30 +1483,62 @@ def handle_drag_and_drop_task(driver, mappings):
             # Находим целевую область по тексту
             target_area = None
             target_index = None  # Сохраняем индекс целевой области для отладки
+
+            # Сначала собираем все цели с нормализованным текстом
+            normalized_targets = []
             for idx, target in enumerate(target_areas):
                 try:
-                    # Пробуем извлечь текст из span с классом MathContent_content
                     try:
                         span = target.find_element(By.XPATH, ".//span[contains(@class, 'MathContent_content')]")
                         text = span.text.strip()
                     except:
                         text = target.text.strip()
-                    
-                    # Нормализуем тексты для сравнения
-                    text_normalized = ' '.join(text.lower().split())
-                    target_normalized = ' '.join(target_text.lower().split())
-                    
-                    # Проверяем совпадение (частичное или полное)
-                    if target_normalized in text_normalized or text_normalized in target_normalized:
-                        # Находим соответствующую drop область (следующий sibling)
-                        parent = target.find_element(By.XPATH, "./..")
-                        drop_area = parent.find_element(By.CSS_SELECTOR, ".LinkTaskRow_linkRowContent__XBn6u")
-                        target_area = drop_area
-                        target_index = idx + 1  # Индекс начинается с 1 (сверху вниз)
-                        print(f"      Найдена целевая область #{target_index} (сверху вниз): '{text[:50]}...'")
-                        break
+                    text_norm = ' '.join(text.lower().split())
+                    normalized_targets.append((idx, target, text, text_norm))
                 except:
                     continue
+
+            target_norm = ' '.join(str(target_text).lower().split())
+
+            # 1) Пытаемся найти ПОЛНОЕ совпадение по нормализованному тексту
+            for idx, target, text, text_norm in normalized_targets:
+                if text_norm == target_norm:
+                    parent = target.find_element(By.XPATH, "./..")
+                    drop_area = parent.find_element(By.CSS_SELECTOR, ".LinkTaskRow_linkRowContent__XBn6u")
+                    target_area = drop_area
+                    target_index = idx + 1
+                    print(f"      Найдена целевая область #{target_index} (точное совпадение): '{text[:50]}...'")
+                    break
+
+            # 2) Если точного совпадения нет – ищем «почти полное» совпадение
+            if not target_area and target_norm:
+                best_idx = None
+                best_target = None
+                best_text = ""
+                best_score = 0.0
+                for idx, target, text, text_norm in normalized_targets:
+                    # если цель короче или почти такой же длины, и содержится в тексте
+                    if target_norm in text_norm:
+                        ratio = len(target_norm) / len(text_norm) if text_norm else 0.0
+                    elif text_norm in target_norm:
+                        ratio = len(text_norm) / len(target_norm) if target_norm else 0.0
+                    else:
+                        continue
+
+                    if ratio > best_score:
+                        best_score = ratio
+                        best_idx = idx
+                        best_target = target
+                        best_text = text
+
+                # берем только достаточно хорошие совпадения, чтобы не путать
+                # "Равно" и "Меньше или равно" и т.п.
+                if best_target is not None and best_score >= 0.8:
+                    parent = best_target.find_element(By.XPATH, "./..")
+                    drop_area = parent.find_element(By.CSS_SELECTOR, ".LinkTaskRow_linkRowContent__XBn6u")
+                    target_area = drop_area
+                    target_index = best_idx + 1
+                    print(f"      Найдена целевая область #{target_index} (почти полное совпадение {best_score:.2f}): '{best_text[:50]}...'")
             
             if source_element and target_area:
                 try:
