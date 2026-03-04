@@ -19,11 +19,18 @@ import requests
 global_driver = None
 
 # URL главной страницы
-MAIN_PAGE_URL_1 = "https://kb.cifrium.ru/teacher/courses/770"  # Модуль 1
-MAIN_PAGE_URL = "https://kb.cifrium.ru/teacher/courses/771"  # Модуль 2
-MAIN_PAGE_URL_2 = "https://kb.cifrium.ru/teacher/courses/772"  # Модуль 3
+# Новые курсы (по запросу пользователя)
+MAIN_PAGE_URL_1 = "https://kb.cifrium.ru/teacher/courses/1061"  # Курс 1
+MAIN_PAGE_URL = "https://kb.cifrium.ru/teacher/courses/1062"   # Курс 2
+MAIN_PAGE_URL_2 = "https://kb.cifrium.ru/teacher/courses/1062"  # Курс 3 (тот же ID, при необходимости можно поменять)
 HOME_URL = "https://kb.cifrium.ru/"
 LOGIN_URL = "https://kb.cifrium.ru/user/login"
+
+# Глобальное состояние соответствия "урок -> модуль Excel" для новых курсов
+# Ключ: (course_id, lesson_id), значение: значение в колонке "Модуль" (или аналогичной)
+COURSE_LESSON_TO_MODULE = {}
+# Ключ: course_id, значение: множество уже использованных значений "Модуль"
+COURSE_USED_MODULES = {}
 
 # AI API настройки - используем g4f (GPT4Free) - полностью бесплатно, без API ключей
 # g4f - бесплатная библиотека для доступа к различным LLM без API ключей
@@ -3990,6 +3997,23 @@ def find_best_radio_match(answer_text, radios):
         except:
             continue
     
+    # Новая строгая эвристика: если один из вариантов почти полностью совпадает с ответом
+    # (одна нормализованная строка содержит другую), берём САМЫЙ ДЛИННЫЙ из таких вариантов.
+    if candidates:
+        best_radio_strict = None
+        best_value_strict = None
+        best_len_strict = 0
+        for radio, value, label_text, label_normalized, _ in candidates:
+            if answer_normalized and (answer_normalized in label_normalized or label_normalized in answer_normalized):
+                ln = len(label_normalized)
+                if ln > best_len_strict:
+                    best_len_strict = ln
+                    best_radio_strict = radio
+                    best_value_strict = value
+        if best_radio_strict is not None:
+            print(f"    [DEBUG] [STRICT] Выбрано почти полное совпадение по тексту (длина={best_len_strict})")
+            return best_radio_strict, best_value_strict
+    
     if not candidates:
         print(f"    [DEBUG] Не найдено кандидатов для радио-кнопок")
         return None, None
@@ -4116,12 +4140,14 @@ def find_best_radio_match(answer_text, radios):
             overlap = min(len(answer_normalized), len(label_normalized))
             print(f"        [Частичное совпадение: первые {overlap} символов совпадают]")
     
-    # Если ничего не найдено, но есть кандидаты, выбираем наиболее похожий (схожесть > 20%)
+    # Если ничего не найдено, но есть кандидаты, пробуем общий скор по схожести строк.
+    # ВАЖНО: теперь мы НИЧЕГО не выбираем, если схожесть слишком низкая (< 40%),
+    # чтобы не делать рандомные угадывания для ответов вроде "Ответ", "Пять" и т.п.
     if candidates:
         print(f"    [DEBUG] Пробуем найти наиболее похожий вариант...")
         from difflib import SequenceMatcher
         best_match = None
-        best_similarity = 0
+        best_similarity = 0.0
         similarity_scores = []
         for radio, value, label_text, label_normalized, _ in candidates:
             similarity = SequenceMatcher(None, answer_normalized, label_normalized).ratio()
@@ -4137,17 +4163,13 @@ def find_best_radio_match(answer_text, radios):
         for i, (sim, radio, value, label_text, label_normalized) in enumerate(similarity_scores[:3], 1):
             print(f"      {i}. Схожесть: {sim:.2%}, вариант: '{label_text[:60]}...'")
         
-        # Используем более низкий порог (20% вместо 50%) для выбора варианта
-        # Если есть хотя бы какое-то совпадение, выбираем наиболее похожий
-        if best_match and best_similarity >= 0.2:  # Минимум 20% схожести
+        # Выбираем вариант ТОЛЬКО если схожесть достаточно высокая
+        SIMILARITY_THRESHOLD = 0.40  # 40%
+        if best_match and best_similarity >= SIMILARITY_THRESHOLD:
             print(f"    [DEBUG] ✓ Найден наиболее похожий вариант (схожесть: {best_similarity:.2%}): '{best_match[2][:80]}...'")
             return best_match[0], best_match[1]
-        elif best_match and best_similarity > 0:
-            # Даже если схожесть очень низкая, выбираем наиболее похожий вариант
-            print(f"    [DEBUG] ⚠ Схожесть низкая ({best_similarity:.2%}), но выбираем наиболее похожий вариант: '{best_match[2][:80]}...'")
-            return best_match[0], best_match[1]
         else:
-            print(f"    [DEBUG] ⚠ Не удалось найти подходящий вариант (схожесть: {best_similarity:.2%})")
+            print(f"    [DEBUG] ⚠ Не удалось найти вариант с достаточной схожестью (max: {best_similarity:.2%} < {SIMILARITY_THRESHOLD:.0%})")
     
     print(f"    [DEBUG] ⚠ Возвращаем None, None - совпадение не найдено")
     return None, None
@@ -4382,7 +4404,21 @@ def parse_drag_and_drop_answer(answer_text):
     
     Возвращает список кортежей [(цель, элемент), ...]"""
     try:
-        answer_text = answer_text.strip()
+        # Базовая нормализация
+        answer_text = str(answer_text).strip()
+
+        # Поддержка формата с символом "→" и переносами строк из Excel.
+        # Приводим "→" к "->", переносы строк превращаем в точку с запятой,
+        # если это явно список сопоставлений (есть стрелки, но нет ';').
+        normalized = answer_text.replace('→', '->')
+        normalized = normalized.replace('\r\n', '\n').replace('\r', '\n')
+
+        # Если есть стрелка (-> или :) и несколько строк, но нет ';' — считаем, что каждая строка это отдельная пара
+        if '\n' in normalized and ('->' in normalized or ':' in normalized) and ';' not in normalized:
+            lines = [line.strip() for line in normalized.split('\n') if line.strip()]
+            normalized = '; '.join(lines)
+
+        answer_text = normalized.strip()
         
         # Формат 1: JSON-объект
         if answer_text.startswith('{') and answer_text.endswith('}'):
@@ -4420,7 +4456,6 @@ def parse_drag_and_drop_answer(answer_text):
                 
                 # Пробуем использовать регулярные выражения для извлечения пар ключ-значение
                 try:
-                    import re
                     # Улучшенный подход: парсим JSON вручную, находя правильные границы строк
                     # Ищем все пары "ключ": "значение", учитывая что кавычки внутри могут быть частью значения
                     result = []
@@ -4804,24 +4839,31 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
         homework_column = None
         answer_column = None
         description_column = None
+        module_column = None  # колонка "Модуль" или аналогичная
         
         for col in df.columns:
-            col_lower = col.lower()
+            col_lower = str(col).lower()
             if 'homework' in col_lower:
                 homework_column = col
             elif 'answer' in col_lower or 'ответ' in col_lower:
                 answer_column = col
             elif 'description' in col_lower or 'описание' in col_lower:
                 description_column = col
+            elif 'модул' in col_lower or 'module' in col_lower:
+                module_column = col
         
         if answer_column is None:
-            print("  ⚠ Не найдена колонка 'Answer' в Excel")
+            print("  ⚠ Не найдена колонка с ответами ('Answer' или 'Ответ') в Excel")
             return False
         
-        # Для новых форматов (ftest1.xlsx, ftest2.xlsx) колонка Homework может отсутствовать
-        # В этом случае используем все строки из Excel
+        # Определяем course_id из URL (нужно для новых курсов 1061/1062)
+        course_id = None
+        course_match = re.search(r'/teacher/courses/(\d+)', current_url)
+        if course_match:
+            course_id = course_match.group(1)
+        
+        # Для старого формата: есть колонка Homework, фильтруем по lesson_id
         if homework_column:
-            # Старый формат: фильтруем задачи по текущему homework ID
             if lesson_id is None:
                 print("  ⚠ Не удалось извлечь lesson_id из URL")
                 return False
@@ -4834,9 +4876,97 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
                 print(f"  Доступные homework ID в Excel: {df[homework_column].unique().tolist()}")
                 return False
         else:
-            # Новый формат: используем все строки из Excel (для ftest1.xlsx, ftest2.xlsx)
-            homework_tasks = df.copy()
-            print(f"  [DEBUG] Колонка 'Homework' не найдена, используем все строки из Excel (новый формат)")
+            # Новый формат: нет колонки Homework
+            # СНАЧАЛА пробуем использовать строки с ID урока в какой-либо колонке
+            lesson_id_column = None
+            if lesson_id is not None:
+                lesson_id_str = str(lesson_id).strip()
+            for col in df.columns:
+                    col_values = df[col].astype(str).str.strip()
+                    if (col_values == lesson_id_str).any():
+                        lesson_id_column = col
+                        break
+            
+            if lesson_id_column is not None:
+                print(f"  [NEW FORMAT] Обнаружена колонка с ID уроков '{lesson_id_column}', используем группировку по ID")
+                
+                # Строим вспомогательную колонку с "распространённым" lesson_id вниз
+                tmp = df[lesson_id_column].astype(str).str.strip()
+                # Пустые строки или "nan" превращаем в NA
+                tmp = tmp.where(tmp != "", None)
+                tmp = tmp.where(tmp.str.match(r'^\d+$', na=False), None)
+                tmp = tmp.replace({None: pd.NA}).ffill()
+                
+                df["__lesson_id__"] = tmp
+                
+                # Берём только строки текущего урока
+                homework_tasks = df[df["__lesson_id__"] == str(lesson_id)].copy()
+                
+                # Отфильтровываем заголовочные строки (в них нет ответа)
+                ans_series = homework_tasks[answer_column].astype(str).str.strip()
+                homework_tasks = homework_tasks[(ans_series != "") & (ans_series.str.lower() != "nan")]
+                
+                print(f"  Найдено строк с вопросами для урока {lesson_id}: {len(homework_tasks)}")
+                
+                if len(homework_tasks) == 0:
+                    print("  ⚠ Для текущего урока нет ни одной строки с ответами в Excel")
+                    return False
+            else:
+                # Если явной колонки с ID урока нет, пробуем старый механизм с 'Модуль'
+                if module_column is not None and course_id is not None:
+                    print(f"  [NEW FORMAT] Обнаружена колонка модуля '{module_column}' для курса {course_id}")
+                    
+                    # Приводим значения "модуля" к строкам для консистентности
+                    df[module_column] = df[module_column].astype(str)
+                    
+                    # Список модулей в порядке появления в файле
+                    modules_order = []
+                    for val in df[module_column].tolist():
+                        sval = val.strip()
+                        if sval and sval not in modules_order:
+                            modules_order.append(sval)
+                    
+                    if not modules_order:
+                        print("  ⚠ Колонка модуля пуста, используем все строки из Excel")
+                        homework_tasks = df.copy()
+                    else:
+                        # Определяем ключ (course_id, lesson_id) для кэша
+                        lesson_key = (course_id, lesson_id or "no_lesson")
+                        
+                        # Если для этого урока уже выбран модуль, переиспользуем его
+                        if lesson_key in COURSE_LESSON_TO_MODULE:
+                            module_value = COURSE_LESSON_TO_MODULE[lesson_key]
+                            print(f"  [NEW FORMAT] Для этого урока уже используется модуль '{module_value}'")
+                        else:
+                            # Берём первый модуль, который ещё не использовался в этом курсе
+                            used = COURSE_USED_MODULES.get(course_id, set())
+                            module_value = None
+                            for m in modules_order:
+                                if m not in used:
+                                    module_value = m
+                                    break
+                            
+                            if module_value is None:
+                                # Все модули уже использованы – на всякий случай берём последний
+                                module_value = modules_order[-1]
+                                print(f"  ⚠ Все модули уже использованы, повторно используем последний: '{module_value}'")
+                            else:
+                                print(f"  [NEW FORMAT] Для этого урока выбран следующий модуль из Excel: '{module_value}'")
+                            
+                            COURSE_LESSON_TO_MODULE[lesson_key] = module_value
+                            COURSE_USED_MODULES.setdefault(course_id, set()).add(module_value)
+                        
+                        # Фильтруем задачи только по выбранному модулю
+                        homework_tasks = df[df[module_column] == module_value].copy()
+                        print(f"  Найдено строк для модуля '{module_value}': {len(homework_tasks)}")
+                        
+                        if len(homework_tasks) == 0:
+                            print("  ⚠ Для выбранного модуля нет ни одной строки в Excel, используем весь файл")
+                            homework_tasks = df.copy()
+                else:
+                    # Совсем простой случай: ни Homework, ни Модуль, ни колонка с ID урока – используем все строки
+                    homework_tasks = df.copy()
+                    print(f"  [DEBUG] Не найдены 'Homework', 'Модуль' и явная колонка с ID уроков, используем все строки из Excel")
         
         print(f"\n  Найдено задач для homework {lesson_id}: {len(homework_tasks)}")
         
@@ -4915,7 +5045,8 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
             # Выводим описание, если есть
             description_col = None
             for col in df.columns:
-                if 'description' in col.lower() or 'описание' in col.lower():
+                col_lower = str(col).lower()
+                if 'description' in col_lower or 'описание' in col_lower:
                     description_col = col
                     break
             
@@ -5292,17 +5423,29 @@ def process_tasks_from_excel(driver, excel_path="test.xlsx"):
                         print(f"      - '{target[:50]}...' -> '{element}'")
                     task_answer = mappings
                 else:
-                    # Если ответ не парсится как drag_and_drop и это просто число или короткая строка,
-                    # возможно это на самом деле text задача
+                    # Если ответ не парсится как drag_and_drop, пробуем ОЧЕНЬ осторожно fallback в text
+                    # но ТОЛЬКО если реально существует текстовое поле на странице.
                     answer_clean = answer_text.strip()
-                    if (answer_clean.isdigit() or 
+                    try:
+                        task_form = get_task_form(driver)
+                        text_inputs = task_form.find_elements(
+                            By.CSS_SELECTOR,
+                            "input[type='text'][name*='questions'], input[type='text'], textarea"
+                        )
+                    except Exception:
+                        text_inputs = []
+                    
+                    if text_inputs and (answer_clean.isdigit() or 
                         (len(answer_clean) < 50 and not answer_clean.startswith('{') and not answer_clean.startswith('['))):
-                        print("  Ответ похож на text (число или короткая строка), пробуем обработать как text...")
+                        print("  Ответ похож на text (число или короткая строка) и на странице есть текстовое поле, пробуем обработать как text...")
                         task_answer = answer_text
                         # Не меняем task_type, просто используем answer_text как есть
                     else:
-                        print("  ⚠ Не удалось распарсить drag and drop ответ")
-                        print("  Форматы: JSON {'цель': 'элемент'}, список пар 'цель -> элемент; ...', или [('цель', 'элемент'), ...]")
+                        print("  ⚠ Не удалось распарсить drag and drop ответ и подходящего текстового поля нет")
+                        print("  Ожидаемые форматы ответа для drag and drop:")
+                        print("    1) JSON: {\"цель\": \"элемент\", ...}")
+                        print("    2) Строка: \"цель_1 -> элемент_1; цель_2 -> элемент_2; ...\"")
+                        print("    3) Список кортежей: [(\"цель_1\", \"элемент_1\"), ...]")
                         previous_url = driver.current_url  # Обновляем previous_url
                         task_index += 1
                         continue
@@ -5865,12 +6008,12 @@ def main():
     
     # Выбор модуля для выполнения
     print("\n" + "=" * 50)
-    print("ВЫБОР МОДУЛЯ")
+    print("ВЫБОР КУРСА")
     print("=" * 50)
-    print("Выберите модуль для выполнения:")
-    print("  1 - Модуль 1 (курс 770, файл test1.xlsx)")
-    print("  2 - Модуль 2 (курс 771, файл test.xlsx)")
-    print("  3 - Модуль 3 (курс 772, файл test2.xlsx)")
+    print("Выберите курс для выполнения:")
+    print("  1 - Курс 1061 (использует test.xlsx)")
+    print("  2 - Курс 1062 (использует test.xlsx)")
+    print("  3 - Курс 1062 (вторая/дополнительная часть, тоже test.xlsx)")
     print("=" * 50)
     
     while True:
@@ -5879,23 +6022,25 @@ def main():
             if choice == "1":
                 selected_module = 1
                 initial_course_url = MAIN_PAGE_URL_1
-                initial_course_id = "770"
-                initial_excel_file = "test1.xlsx"
-                print(f"\n✓ Выбран модуль 1 (курс 770)")
+                initial_course_id = "1061"
+                initial_excel_file = "test.xlsx"
+                print(f"\n✓ Выбран курс 1061")
                 break
             elif choice == "2":
                 selected_module = 2
                 initial_course_url = MAIN_PAGE_URL
-                initial_course_id = "771"
+                initial_course_id = "1062"
                 initial_excel_file = "test.xlsx"
-                print(f"\n✓ Выбран модуль 2 (курс 771)")
+                print(f"\n✓ Выбран курс 1062")
                 break
             elif choice == "3":
                 selected_module = 3
                 initial_course_url = MAIN_PAGE_URL_2
-                initial_course_id = "772"
-                initial_excel_file = "test2.xlsx"
-                print(f"\n✓ Выбран модуль 3 (курс 772)")
+                # Третий вариант сейчас ведёт на тот же курс 1062,
+                # при необходимости можно поменять ID/URL в константах выше
+                initial_course_id = "1062"
+                initial_excel_file = "test.xlsx"
+                print(f"\n✓ Выбран курс 1062 (вариант 3)")
                 break
             else:
                 print("  ⚠ Неверный выбор! Введите 1, 2 или 3")
@@ -6027,27 +6172,13 @@ def main():
         
         return None
     
-    test1_path = check_excel_file("test1.xlsx")
-    test2_path = check_excel_file("test.xlsx")
-    test3_path = check_excel_file("test2.xlsx")
+    test_path = check_excel_file("test.xlsx")
     
-    if not test1_path:
-        print(f"  ⚠ ВНИМАНИЕ: Файл test1.xlsx не найден!")
-        print(f"  Убедитесь, что файл находится в той же папке, что и программа")
-    else:
-        print(f"  ✓ Файл test1.xlsx найден: {test1_path}")
-    
-    if not test2_path:
+    if not test_path:
         print(f"  ⚠ ВНИМАНИЕ: Файл test.xlsx не найден!")
         print(f"  Убедитесь, что файл находится в той же папке, что и программа")
     else:
-        print(f"  ✓ Файл test.xlsx найден: {test2_path}")
-    
-    if not test3_path:
-        print(f"  ⚠ ВНИМАНИЕ: Файл test2.xlsx не найден!")
-        print(f"  Убедитесь, что файл находится в той же папке, что и программа")
-    else:
-        print(f"  ✓ Файл test2.xlsx найден: {test3_path}")
+        print(f"  ✓ Файл test.xlsx найден: {test_path}")
     
     print("=" * 50 + "\n")
     
@@ -6239,6 +6370,39 @@ def main():
                 
                 print(f"  На странице задания. URL: {driver.current_url}")
                 
+                # УПРОЩЁННЫЙ РЕЖИМ ДЛЯ НОВЫХ КУРСОВ 1061/1062:
+                # На этих курсах нет видео-уроков (iframe), сразу идут задачи.
+                if current_course_id in ("1061", "1062"):
+                    print("  [NEW COURSES] Пытаемся сразу перейти к задачам без видео...")
+                    
+                    # Если мы ещё не на странице задач, пробуем нажать кнопку "Решить задачи"
+                    if "/tasks" not in driver.current_url:
+                        handle_homework_button(driver)
+                        time.sleep(2)
+                    
+                    # Если удалось попасть на страницу задач – обрабатываем их из Excel
+                    if "/tasks" in driver.current_url:
+                        print("\n" + "=" * 50)
+                        print(f"Обрабатываем задачи из Excel ({current_excel_file})...")
+                        print("=" * 50)
+                        result = process_tasks_from_excel(driver, current_excel_file)
+                        
+                        if result == "homework_completed":
+                            print("\n  Домашнее задание завершено, возвращаемся к списку уроков")
+                            driver.get(current_course_url)
+                            time.sleep(1.5)
+                            # Переходим к следующему циклу обработки уроков
+                            continue
+                        else:
+                            print("\n  Остаемся на странице задач (проверьте Excel/формат ответов)")
+                            break  # На странице задач нет списка уроков, выходим из цикла
+                    else:
+                        print("  ⚠ Не удалось попасть на страницу задач для этого урока")
+                        driver.get(current_course_url)
+                        time.sleep(1.5)
+                        continue
+                
+                # Для старых модулей по-прежнему работаем в режиме с контрольными тестами и видео
                 # Проверяем, не находимся ли мы на контрольном тесте (6107 для модуля 2, 6108 для модуля 3)
                 current_url = driver.current_url
                 is_control_test = "/lessons/6107" in current_url or "/lessons/6108" in current_url
